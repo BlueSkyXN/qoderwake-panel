@@ -1,0 +1,68 @@
+'use strict';
+nav.push(['controls','增强管理','独立调用者、补丁确认门与官方运行开关','M4 4h14v16H4zM8 8h6M8 12h6M8 16h6']);
+nav.push(['channels','IM 通道','官方现有通道状态与生命周期管理','M3 4h16v12H8l-5 4z']);
+let pluginPage=1, pluginKeyword='';
+const oldPlugins=renderers.plugins;
+renderers.controls=async()=>{
+  await loadState();
+  const [callers,p,r,m]=await Promise.all([api('callers'),api('patch/state'),api('runtime'),api('maintenance')]);
+  actions.revokeCaller=async i=>{await mutate('callers/revoke',{id:callers[i].id},'撤销这个调用者的密钥？正在执行的请求不会被取消。');await route('controls')};
+  actions.patchApply=()=>patchTransaction('apply');
+  actions.patchRestore=()=>patchTransaction('restore');
+  actions.enterMaintenance=async()=>{const value=await mutate('maintenance/enter',{reason:'管理员手动维护',ttl:300},'进入维护模式？新的业务写请求会被拒绝；已有请求会先排空。');if(value){showMaintenance(value);await route('controls')}};
+  actions.exitMaintenance=async()=>{const value=await api('maintenance/exit',{});showMaintenance(value);await route('controls')};
+  return card('独立 API 调用者',`<p class="muted">仅能 POST /api/gw，并限定到所选机器人。不开放聊天历史、设置或面板登录。额度统计已接纳的请求次数，不是 token 或账单金额；超时不退还次数。</p>`+table(['名称','机器人范围','次数 / 上限','有效期','操作'],callers.map((c,i)=>`<tr><td>${esc(c.name)}<br><span class="mono">${esc(c.id)}</span></td><td>${c.wakers.map(esc).join('<br>')}</td><td>${c.used} / ${c.quota}</td><td>${esc(new Date(c.expires*1000).toLocaleString())}</td><td>${c.revoked?'已撤销':btn('revokeCaller','撤销',i)}</td></tr>`))+`<form id="caller-form"><div class="form-grid"><div><label for="caller-name">调用者名称</label><input id="caller-name" maxlength="80" required></div><div><label for="caller-quota">总请求次数上限</label><input id="caller-quota" type="number" value="100" min="1" max="100000" required></div><div><label for="caller-days">有效天数</label><input id="caller-days" type="number" value="30" min="1" max="365" required></div><div><label for="caller-wakers">授权机器人（可多选）</label><select id="caller-wakers" multiple required>${options(state.wakers)}</select></div></div><div class="form-actions"><button class="primary">创建密钥</button></div></form><div id="caller-secret" hidden><p class="error-text">密钥仅展示一次；离开本页即清除。请保存到调用程序的秘密存储中。</p><pre id="caller-token" class="code"></pre>${btn('clearCallerToken','清除显示')}</div>`)+
+  card('维护接纳门',`<p>当前状态：<span class="badge">${esc(m.mode)}</span> · epoch ${m.epoch}</p><p class="muted">${esc(m.reason||'正常接纳请求')}。活动业务写请求 ${m.activeMutations}，其中消费请求 ${m.activeCalls}。</p><p class="fine muted">维护闸门只阻止经 Panel 接纳的新请求；不能冒充 daemon 全局工作锁。重启与网关切换还要求连续两次 daemon activity 为空。</p><div class="row">${m.mode==='normal'?btn('enterMaintenance','进入维护'):btn('exitMaintenance','退出维护')}</div>`)+
+  card('受控补丁事务',`<p>状态：${esc(p.state)} · 审核版本：${esc(p.version||'未匹配')}</p><p class="mono">${esc(p.sha256||'')}</p><p class="muted">${esc(p.note)}</p><p class="fine">先生成 5 分钟有效的确认计划，再应用或还原。服务器检查 daemon 已停止、文件哈希、唯一锚点与输出哈希；不自动停服务，也不自动修改 hosts。未知版本拒绝执行。</p><div class="row">${btn('patchApply','准备应用',undefined,p.state!=='original'?'disabled':'')}${btn('patchRestore','准备还原',undefined,p.state!=='patched'?'disabled':'')}</div>`)+
+  card('官方运行开关',`<p class="muted">${esc(r.note)}</p><p>面板重启入口有效值：自动热部署 ${r.effectiveOnPanelRestart?.hotDeploy?'开':'关'} / 官方 Embedding ${r.effectiveOnPanelRestart?.embeddingDisabled?'禁用':'未禁用'}</p><p>当前 daemon 进程观测：${r.observed.length?r.observed.map(x=>`自动热部署 ${x.hotDeploy?'开':'关'} / 官方 Embedding ${x.embeddingDisabled?'禁用':'未禁用'}`).join('；'):'未取得，不能推断已生效'}</p><form id="runtime-form"><label class="check-row"><input id="hot-deploy" type="checkbox"${r.desired.hotDeploy===true?' checked':''}>允许官方自动热部署（默认关闭；不影响 manifest 查询或独立升级器）</label><label class="check-row"><input id="disable-embedding" type="checkbox"${r.desired.embeddingDisabled!==false?' checked':''}>禁用官方 memory Embedding（默认关闭；不是 BYOK 替换）</label><div class="form-actions"><button>保存下次启动策略</button>${btn('applyRuntime','保存后重启 daemon')}</div></form>`);
+};
+async function patchTransaction(action){
+  const plan=await api('patch/plan',{action});
+  const r=await mutate('patch/execute',{plan:plan.id},`${action==='apply'?'应用':'还原'} ${plan.module}，版本 ${plan.version}？\n当前 SHA-256：${plan.sha256}\n${plan.warning}`);
+  if(r)await route('controls');
+}
+actions.clearCallerToken=()=>{E('caller-token').textContent='';E('caller-secret').hidden=true};
+actions.applyRuntime=async()=>{if(!await confirmAction('保存策略并重启 daemon？会中断当前任务；官方 Embedding 默认关闭。'))return;await api('runtime/policy',{hotDeploy:E('hot-deploy').checked,embeddingDisabled:E('disable-embedding').checked,confirm:'/api/runtime/policy'});await api('runtime/apply',{confirm:'/api/runtime/apply'});toast('已保存并提交重启');await route('controls')};
+afterRender.controls=()=>{
+  E('caller-form').addEventListener('submit',async e=>{e.preventDefault();const button=e.target.querySelector('button');button.disabled=true;try{const result=await mutate('callers/create',{name:E('caller-name').value,wakers:[...E('caller-wakers').selectedOptions].map(x=>x.value),quota:Number(E('caller-quota').value),days:Number(E('caller-days').value)},'创建仅限所选机器人的 API 密钥？请通过 HTTPS 或 SSH 隧道传输与保存。');if(result){E('caller-token').textContent=result.token;E('caller-secret').hidden=false;E('caller-form').reset()}}catch(error){toast(error.message)}finally{button.disabled=false}});
+  E('runtime-form').addEventListener('submit',async e=>{e.preventDefault();if(e.submitter?.dataset.action==='applyRuntime')return;try{await mutate('runtime/policy',{hotDeploy:E('hot-deploy').checked,embeddingDisabled:E('disable-embedding').checked},'保存官方启动开关？当前 daemon 不重启，正在运行的任务不受影响。')}catch(error){toast(error.message)}});
+};
+renderers.channels=async()=>{
+  await loadState();
+  const rows=await api('channels');
+  actions.channelStart=i=>channelAction(rows[i],'start');
+  actions.channelStop=i=>channelAction(rows[i],'stop');
+  actions.channelRestart=i=>channelAction(rows[i],'restart');
+  actions.channelDelete=async i=>{await mutate('channels/delete',{id:rows[i].channelId||rows[i].id},`删除 ${rows[i].name||rows[i].type} 通道配置？平台侧应用不会被删除。`);await route('channels')};
+  actions.channelEdit=i=>showChannelEditor(rows[i]);actions.channelNew=()=>showChannelEditor(null);actions.channelCancel=()=>{E('channel-editor').hidden=true};
+  return card('官方 IM 通道',`<p class="muted">直接使用 daemon 官方通道接口，不重做 IM 传输。密钥不回显；编辑时留空保留。新通道默认停用；编辑已运行通道时，官方 daemon 可能立即重启连接。</p>`+(rows.length?table(['名称 / 类型','状态','策略 / 机器人','操作'],rows.map((r,i)=>`<tr><td>${esc(r.name||r.botName||r.type)}</td><td>${esc(r.status??r.enabled??'未知')}</td><td>${esc(r.accessPolicy||'paired')}<br>${esc(r.agentId||r.bindingTarget?.targetId||r.bindingTarget||'配对后绑定')}</td><td class="actions">${btn('channelEdit','编辑',i)}${btn('channelStart','启动',i)}${btn('channelStop','停止',i)}${btn('channelRestart','重启',i)}${btn('channelDelete','删除',i,'class="danger"')}</td></tr>`)):empty('尚未配置官方通道；未进行 IM + BYOK 实测'))+btn('channelNew','新增飞书 通道'))+`<section id="channel-editor" class="card" hidden></section>`;
+};
+async function showChannelEditor(row){
+  const d=row?await api('channels/detail?id='+encodeURIComponent(row.channelId||row.id)):{};
+  const editor=E('channel-editor');editor.hidden=false;editor.innerHTML=`<h2>${row?'编辑通道':'新增通道'}</h2><form id="channel-form"><div class="form-grid"><div><label for="channel-type">平台</label><select id="channel-type"><option value="feishu">飞书（CN 支持）</option></select></div><div><label for="channel-name">机器人显示名称</label><input id="channel-name" maxlength="100" value="${esc(d.botName||d.name||'')}"></div><div><label for="channel-appid">App ID</label><input id="channel-appid" maxlength="300" value="${esc(d.appId||'')}" required></div><div><label for="channel-secret">App Secret${row?'（留空保留）':''}</label><input id="channel-secret" type="password" autocomplete="new-password"${row?'':' required'}></div><div><label for="channel-policy">访问策略</label><select id="channel-policy"><option value="paired"${d.accessPolicy!=='open'?' selected':''}>配对后访问</option><option value="open"${d.accessPolicy==='open'?' selected':''}>开放到指定机器人</option></select></div><div><label for="channel-waker">绑定机器人</label><select id="channel-waker"><option value="">配对时决定</option>${options(state.wakers,d.agentId||d.bindingTarget?.targetId||d.bindingTarget)}</select></div></div><label class="check-row"><input id="channel-delivery" type="checkbox"${d.artifactDeliveryEnabled?' checked':''}>允许发送生成的工件</label><div class="form-actions"><button class="primary">仅保存配置</button>${btn('channelCancel','取消')}</div><p class="fine muted">App Secret 只随本次写请求交给本机 daemon；面板不在响应或审计中记录。首次授权、事件订阅和平台权限仍需按官方平台配置。</p></form>`;
+  E('channel-form').addEventListener('submit',async e=>{e.preventDefault();try{await mutate('channels/config',{id:row?(row.channelId||row.id):'',type:E('channel-type').value,appId:E('channel-appid').value,appSecret:E('channel-secret').value,botName:E('channel-name').value,accessPolicy:E('channel-policy').value,bindingTarget:E('channel-waker').value,artifactDeliveryEnabled:E('channel-delivery').checked,enabled:row?d.enabled===true:false},'保存通道凭据和权限策略？新通道默认停用；编辑运行中的通道可能由官方 daemon 立即重启连接。');await route('channels')}catch(error){toast(error.message)}});bindActions();editor.scrollIntoView({block:'nearest'});
+}
+async function channelAction(row,action){await mutate('channels/action',{id:row.channelId||row.id,action},`对 ${row.name||row.type} 执行 ${action}？连接后平台消息可能触发真实 BYOK 调用。`);await route('channels')}
+renderers.plugins=async()=>{
+  if(!isAdmin())return oldPlugins();
+  await loadState();
+  const [catalog,installed]=await Promise.all([api('plugins/catalog?keyword='+encodeURIComponent(pluginKeyword)+'&page='+pluginPage),api('plugins/installed')]);
+  const rows=catalog.items||[], installedRows=installed.items||installed.plugins||[];
+  actions.pluginDetail=async i=>{
+    const row=rows[i],id=row.pluginId||row.id;
+    const [detail,installed]=await Promise.all([api('plugins/detail?id='+encodeURIComponent(id)),api('plugins/installations?id='+encodeURIComponent(id))]);
+    const info=detail.plugin||detail;
+    const version=info.version||info.latestVersion||row.version||row.latestVersion;
+    E('plugin-detail').hidden=false;
+    E('plugin-detail').innerHTML=`<h2>${esc(info.name||row.name||id)}</h2><p>${esc(info.description||row.description||'')}</p><p>版本：${esc(version||'接口未返回，安装已禁用')}</p><label for="plugin-waker">目标机器人</label><select id="plugin-waker">${options(state.wakers)}</select><div class="row">${btn('pluginInstall','安装此版本',undefined,state.pluginWritesEnabled&&typeof version==='string'?'':'disabled')}${btn('pluginRemove','卸载',undefined,state.pluginWritesEnabled?'':'disabled')}${btn('pluginEnable','启用',undefined,state.pluginWritesEnabled?'':'disabled')}${btn('pluginDisable','禁用',undefined,state.pluginWritesEnabled?'':'disabled')}</div><details><summary>安装状态</summary><pre class="code">${esc(JSON.stringify(installed,null,2))}</pre></details><p class="fine muted">插件写操作默认关闭：CLI frontend session 不能替代官方 Console 的高风险确认。只有显式实验开关开启时才可操作；安装会下载并运行第三方代码并可能触发官方上报。</p>`;
+    const change=async(kind,extra={})=>{await mutate('plugins/'+kind,{pluginId:id,wakerId:E('plugin-waker').value,...extra},`${kind} 插件 ${row.name||id}？安装会下载第三方代码，可能触发安装上报。`);await route('plugins')};
+    actions.pluginInstall=()=>change('install',{expectedVersion:version});actions.pluginRemove=()=>change('remove');actions.pluginEnable=()=>change('toggle',{enabled:true});actions.pluginDisable=()=>change('toggle',{enabled:false});
+    bindActions();E('plugin-detail').scrollIntoView({block:'nearest'});
+  };
+  actions.pluginPrev=async()=>{pluginPage=Math.max(1,pluginPage-1);await route('plugins')};
+  actions.pluginNext=async()=>{pluginPage++;await route('plugins')};
+  return card('已安装插件',installedRows.length?table(['名称','版本','状态'],installedRows.map(p=>`<tr><td>${esc(p.name||p.pluginId||p.id)}</td><td>${esc(p.version||'未知')}</td><td>${p.enabled===false?'已停用':'已启用'}</td></tr>`)):empty('当前没有已安装插件或官方接口未返回明细'))+card('官方插件市场',`<form id="plugin-search" class="row"><label for="plugin-keyword">关键词</label><input id="plugin-keyword" maxlength="120" value="${esc(pluginKeyword)}"><button>搜索</button></form><p class="fine muted">数据来自当前官方账号可访问的市场，不是离线镜像。安装需要官方有效身份和可信 Console 会话。</p>`+(rows.length?table(['名称','说明',''],rows.map((r,i)=>`<tr><td>${esc(r.name||r.pluginId||r.id)}</td><td>${esc(r.description||'')}</td><td>${btn('pluginDetail','详情与安装',i)}</td></tr>`)):empty())+`<div class="row">${btn('pluginPrev','上一页',undefined,pluginPage===1?'disabled':'')}<span>第 ${pluginPage} 页 · 共 ${Number(catalog.total||0)} 项</span>${btn('pluginNext','下一页',undefined,pluginPage*20>=Number(catalog.total||0)?'disabled':'')}</div>`)+`<section id="plugin-detail" class="card" hidden></section>`;
+};
+afterRender.plugins=()=>E('plugin-search')?.addEventListener('submit',async e=>{e.preventDefault();pluginKeyword=E('plugin-keyword').value;pluginPage=1;await route('plugins')});
+const oldGateway=renderers.gateway;
+renderers.gateway=async()=>{const html=await oldGateway();return html.replace('&lt;ADMIN_TOKEN&gt;','&lt;CALLER_TOKEN&gt;').replace('共享管理员令牌不等同于独立调用者密钥。','在“增强管理”创建独立密钥，限定机器人、有效期与请求额度；不要向调用程序分发管理员令牌。')};

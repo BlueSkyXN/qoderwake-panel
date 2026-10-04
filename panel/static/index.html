@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>QoderWake Panel</title><link rel="stylesheet" href="/static/panel.css"><script src="/static/panel.js" defer></script><script src="/static/management.js" defer></script><script src="/static/advanced.js" defer></script></head>
+<body>
+<section id="login" class="welcome" hidden aria-label="面板登录">
+  <div class="welcome-copy">
+    <div class="brand-mark" aria-hidden="true">✦</div>
+    <h1>Welcome to QoderWake Panel</h1>
+    <p class="welcome-lead">让你的数字员工，更好管理。</p>
+    <p class="muted intro">模型、机器人、会话与运行状态，在一个面板里。<br>沿用 QoderWake 的视觉语言，保留独立的访问权限。</p>
+    <form id="login-form">
+      <label for="login-token">面板访问令牌</label>
+      <input id="login-token" type="password" autocomplete="current-password" required placeholder="输入管理员或只读令牌">
+      <div class="welcome-actions"><button class="primary welcome-submit" type="submit">登录面板</button><select class="theme-select" aria-label="登录页主题"></select></div>
+      <p id="login-error" role="alert" class="error-text"></p>
+    </form>
+    <p class="muted fine">这是独立管理面板，不是官方账号登录。管理员可修改配置；只读访问不开放会话正文和敏感配置。</p>
+    <p class="transport-note">HTTP 不提供传输加密。建议使用 SSH 隧道或配置面板原生 HTTPS。</p>
+  </div>
+  <aside class="welcome-art" aria-label="面板能力概览">
+    <div class="sample-cards" aria-hidden="true"><div class="sample-card rear"><span>MODEL</span><b>你的模型</b><i>BYOK</i></div><div class="sample-card middle"><span>WAKER</span><b>你的机器人</b><i>READY</i></div><div class="sample-card front"><span>PANEL</span><b>你的控制台</b><i>LOCAL FIRST</i></div></div>
+    <h2>看得见状态，<br>管得住配置。</h2><p>保留官方能力，按需增加管理功能。</p><span class="art-foot">QoderWake Panel · 独立增强工具</span>
+  </aside>
+</section>
+<div id="app" class="app" hidden>
+  <aside class="sidebar"><a class="brand" href="#overview"><span class="brand-symbol">✦</span> QoderWake <span class="brand-sub">Panel</span></a><span class="nav-caption">工作空间</span><nav id="nav" aria-label="主导航"></nav><div class="sidebar-bottom"><label for="theme">外观</label><select id="theme" class="theme-select" aria-label="主题"></select><div class="identity"><span id="status-dot" class="status-dot"></span><div><strong id="identity-name">正在连接</strong><span id="role" class="muted fine"></span></div><button id="logout" class="ghost" type="button">退出</button></div><span class="version">Panel 0.12.0 · CN 1.1.6 验证基线</span></div></aside>
+  <main><header class="page-header"><div><div class="eyebrow">QODERWAKE PANEL</div><h1 id="page-title">总览</h1><p id="page-desc" class="muted"></p></div><button id="refresh" type="button">刷新</button></header><div id="transport" class="notice" hidden>当前连接是 HTTP，Cookie 不会加密网络传输。请使用可信网络 / SSH 隧道，或配置原生 HTTPS。</div><div id="maintenance-banner" class="notice maintenance-banner" hidden><strong id="maintenance-mode">维护模式</strong><span id="maintenance-detail"></span><button id="maintenance-exit" type="button">退出维护</button></div><div id="viewer-note" class="notice" hidden>只读模式：开放状态、模型名称、机器人列表、用量和插件目录摘要；聊天正文、配置与审计仅管理员可见。</div><div id="content" aria-live="polite"></div><footer class="page-footer">独立增强面板 · 不冒充官方产品 · 未验证能力不会标为已完成</footer></main>
+</div>
+<div id="boot" class="boot">正在连接面板…</div><div id="toast" role="status" hidden></div>
+<dialog id="confirm-dialog"><form method="dialog"><h2>确认操作</h2><p id="confirm-text"></p><div class="dialog-actions"><button value="cancel">取消</button><button value="ok" class="primary">确认继续</button></div></form></dialog>
+<dialog id="deletion-dialog" class="deletion-dialog"><form method="dialog"><h2 id="deletion-title">删除影响检查</h2><p id="deletion-summary" class="muted"></p><div id="deletion-checks" class="deletion-checks"></div><div class="dialog-actions"><button value="cancel">关闭</button><button id="deletion-execute" value="execute" class="danger">确认删除</button></div></form></dialog>
+</body></html>

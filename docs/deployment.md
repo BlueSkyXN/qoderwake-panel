@@ -1,0 +1,54 @@
+# 部署、升级与发布
+
+适用于 Panel 0.12.0。运行时仅需 Python 标准库；Linux 受管启停还要求 `/proc`、bash，以及 Python / 内核的 pidfd 支持。连接快照使用 `ss`。本项目不安装 nginx，也不自动安装或启用 systemd。
+
+## 新部署
+
+1. 先安装官方 QoderWake，并通过官方登录流程建立可用的 daemon HOME；确认 daemon 已启动。Panel 不授予官方账号、身份或权益。
+2. 保留完整源码目录结构，尤其是 `panel/` 的 Python 模块、`static/` 和 `config/`，以及 `ops/`。运行数据使用独立目录，不放进源码发布包。
+3. 在 `panel/panel.env` 保存实例配置，权限设为 `0600`。下列路径为示例，必须替换为自己的实际路径；该文件不得提交或公开。
+
+```bash
+QW_ROOT=/path/to/panel-data
+QW_HOME=/path/to/daemon-home
+QW_DAEMON_BIN=/path/to/qoderwake-cn
+QW_DAEMON_URL=http://127.0.0.1:19830
+QW_BIND=127.0.0.1
+QW_PORT=19831
+```
+
+4. 执行 `bash panel/restart-panel.sh`。它会启动并核对精确进程、监听端口与 `/api/health` 的版本，然后写入 `$QW_ROOT/process-state/panel.json`。
+5. 在浏览器登录表单中使用 `$QW_ROOT/admin-token.txt` 或 `viewer-token.txt`。只在部署机本地读取凭据，不放进 URL、日志或 issue。daemon 的 `.auth/token` 必须属于 Panel 运行用户，且没有 group/world 权限；认证失败时停下来核对官方认证与文件权限，不修改官方认证边界。
+
+非回环访问仍受认证、同源和 CSRF 检查，但 HTTP 不提供传输加密。原生 HTTPS 是可选能力，配置方法见 [README](../README.md#远程访问与原生-https)。升级时保留既有绑定和传输方式，不隐式改网络或系统信任。
+
+## 升级已受管的 Panel
+
+不要先覆盖当前进程身份记录所引用的脚本：停止时还会检查脚本的 inode/hash，提前替换会使身份核对失败。
+
+1. 准备经过测试的干净候选，并在独立目录完成 Python、JavaScript、shell 语法与发布检查。
+2. 安排面板维护窗口，协调外部 CLI/IM 写入。不要把 Panel 的维护门当作 daemon 全局锁。
+3. 在当前版本仍完整时，使用当前 `process-control.py stop` 停止 Panel。所传 `--root`、`--name panel`、`--profile panel`、`--launch`、`--script`、`--home`、`--port`、`--mode panel`、`--log`、`--health-url` 必须与部署实例一致；禁止按名称批量杀进程。
+4. 备份旧运行文件、`panel.env`、令牌文件及 SQLite 数据库。数据库应在 Panel 停止后复制，或使用 SQLite backup API 创建一致快照。敏感备份只留在部署机私有目录，权限 `0700` / `0600`。
+5. 替换面板代码及其全部依赖，保留运行配置、令牌、daemon HOME、Provider 配置和网关规则。
+6. 使用新版 `panel/restart-panel.sh` 启动。核对版本、进程身份、端口、管理员和只读权限，以及模型/机器人等只读接口；实际模型调用或资源写入另行验收。
+7. 若验收失败，先使用仍匹配的新版本控制器停止新 Panel，再恢复旧代码和必要的数据库快照，最后按旧版本入口启动并核对健康。不要在新进程运行时先覆盖它的脚本。
+
+面板升级不要求重启 daemon 或网关。旧 daemon / 网关未受管时，新面板可以连接官方 API，但其重启、切换和运行态确认会保持受限或未知。
+
+## 首次迁移旧非受管进程
+
+0.12 不会根据进程名、旧 PID 文件或被占用的端口自动接管旧进程。直接调用新版启动器会拒绝未知监听，这是预期保护。
+
+首次迁移应作为单独维护步骤：记录并核对旧进程 PID、start ticks、boot ID、UID、可执行文件、完整 argv 和 socket owner；通过已验证的进程身份与 pidfd 停止唯一目标；确认端口释放，再用新版启动器启动并建立 state。身份不可读、多候选或端口归属不确定时停止操作，不伪造 state、不降级为 `pkill -f`。回滚材料必须包含旧启动环境与入口，而不只有旧源码。
+
+Panel、daemon 和网关分别迁移。只升级 Panel 时，不顺带停止或替换生产 daemon / 网关；网关首次迁移需要独立的规则、启动、业务与精确回滚验收。
+
+## 干净快照发布
+
+- 手工挑选已验证且脱敏的源码、文档、示例和测试。不要复制私有 Git 历史，也不要把实验工作目录整体打包。
+- 令牌、真实 `settings.json`、`panel.env`、数据库、日志、恢复点、`process-state/`、`gateway-runtime/`、补丁运行数据、`__pycache__` 和 `.DS_Store` 不进入候选。
+- 在候选目录运行 README 中的测试与 `bash scripts/check-release.sh`。发布门禁是卫生检查，不是安全认证；仍须审查新增文件和发布 diff。
+- 公开仓使用独立提交和版本标签。源码快照可包含零补丁与补丁工具，但不默认应用补丁，也不把本地 fixture 验收写成生产业务完成。
+
+已知功能与验收边界见 [验收矩阵](acceptance.md)。
