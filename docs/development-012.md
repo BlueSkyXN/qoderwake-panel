@@ -66,7 +66,7 @@
 - Provider 页面使用 revision CAS 与具体 probe target 确认；Waker/Provider 删除使用结构化影响对话框；维护 banner 和活动计数已接入。
 - 官方外观模式表述为 auto/light/dark；暖白/暖黑明确标为 Panel 增强。
 - 自动热部署关闭只停止受管启动时的自动热部署开关，不等于停止 manifest 查询、独立升级器或 root 修改。
-- HTTP 风险提示保留；HTTPS 不是本批开发前置条件，推荐 loopback + SSH tunnel。官方 memory Embedding 默认关闭，不等于已实现 Embedding BYOK。
+- HTTP 风险提示保留；HTTPS 不是本批开发前置条件。既有部署按维护者选择保留公网/HTTP，不自动改为 loopback 或 SSH tunnel，admin/viewer 令牌本批也不轮换。官方 memory Embedding 默认关闭，不等于已实现 Embedding BYOK。
 
 ## 2026-10-04 复核修复
 
