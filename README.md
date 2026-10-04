@@ -53,7 +53,7 @@ python3 panel/qoderwake-panel.py
 
 ### 远程访问与原生 HTTPS
 
-推荐 SSH 隧道，不改变 daemon 的认证，也不新增反向代理：
+需要回环远程访问时，可使用 SSH 隧道；这是可选部署方式，不改变 daemon 的认证，也不自动调整已有公网绑定：
 
 ```bash
 ssh -L 19831:127.0.0.1:19831 <ssh-host>
@@ -108,6 +108,8 @@ node --test tests/test_*.mjs
 bash scripts/check-release.sh
 ```
 
-Node 仅用于开发期 JavaScript 语法检查。发布检查只检查候选目录，不拷贝、不 commit、不 push。测试缓存、实际配置、数据库、令牌、备份不得进公开快照；检查通过不等于安全认证。
+Node 仅用于开发期 JavaScript 语法和回归测试。发布检查只检查候选目录，不拷贝、不 commit、不 push。测试缓存、实际配置、数据库、令牌、备份不得进公开快照；检查通过不等于安全认证。
 
-详细设计：[网络控制](docs/uplink-control.md) · [验收状态](docs/acceptance.md) · [部署与升级](docs/deployment.md)。
+[公开仓](https://github.com/BlueSkyXN/qoderwake-panel) 与 [v0.12.0 Release](https://github.com/BlueSkyXN/qoderwake-panel/releases/tag/v0.12.0) 已发布。发布标签和附件保持不变，后续 `main` 文档修订不等于新的运行版本；基线、两仓职责和 PR 规则见 [维护约定](docs/maintenance.md)。
+
+详细设计：[网络控制](docs/uplink-control.md) · [验收状态](docs/acceptance.md) · [部署与升级](docs/deployment.md) · [维护与 PR](docs/maintenance.md)。
