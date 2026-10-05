@@ -152,7 +152,7 @@ class PanelTests(unittest.TestCase):
             self.assertFalse(app.restart_daemon()[0])
         state = {
             'mode': 'direct', 'endpoint': None, 'pid': 123,
-            'healthVersion': '1.1.6'
+            'healthVersion': '1.1.6', 'port': 19830
         }
         status_result = app.subprocess.CompletedProcess(
             [], 0, stdout=json.dumps({
@@ -174,7 +174,7 @@ class PanelTests(unittest.TestCase):
     def test_restart_rejects_unhealthy_managed_status(self):
         state = {
             'mode': 'gateway', 'endpoint': 'http://127.0.0.1:19840',
-            'pid': 123, 'healthVersion': '1.1.6'
+            'pid': 123, 'healthVersion': '1.1.6', 'port': 19830
         }
         status_result = app.subprocess.CompletedProcess(
             [], 0, stdout=json.dumps({
@@ -191,7 +191,7 @@ class PanelTests(unittest.TestCase):
     def test_restart_accepts_matching_managed_state_and_result(self):
         before = {
             'mode': 'direct', 'endpoint': None, 'pid': 123,
-            'healthVersion': '1.1.6'
+            'healthVersion': '1.1.6', 'port': 19830
         }
         after = dict(before, pid=456)
         status_result = app.subprocess.CompletedProcess(

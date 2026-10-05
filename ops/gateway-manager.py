@@ -368,6 +368,10 @@ class Manager:
                 value.get('upstream') != generation['upstream']):
             raise ValueError('gateway_preflight_hash_mismatch')
 
+    def require_stoppable_port(self, state):
+        if gateway_port_status(state, self.proc_root) not in ('owned', 'unbound'):
+            raise ValueError('gateway_listener_identity_unknown')
+
     def stop(self, state):
         status = self.process_status(state)
         if status == 'exited':
@@ -376,6 +380,7 @@ class Manager:
             return
         if status != 'match':
             raise ValueError('gateway_process_identity_unknown')
+        self.require_stoppable_port(state)
         if (not hasattr(os, 'pidfd_open') or
                 not hasattr(signal, 'pidfd_send_signal')):
             raise ValueError('gateway_pidfd_required')
@@ -390,6 +395,7 @@ class Manager:
         try:
             if self.process_status(state) != 'match':
                 raise ValueError('gateway_process_identity_changed')
+            self.require_stoppable_port(state)
             signal.pidfd_send_signal(pidfd, signal.SIGTERM)
             ready, _, _ = select.select([pidfd], [], [], 5)
             if ready:

@@ -54,7 +54,7 @@ DAEMON_BIN = os.environ.get('QW_DAEMON_BIN') or 'qoderwake-cn'
 DAEMON = os.environ.get('QW_DAEMON_URL') or 'http://127.0.0.1:19830'
 PORT = int(os.environ.get('QW_PORT') or 19831)
 BIND = os.environ.get('QW_BIND') or '127.0.0.1'
-VERSION = '0.12.0'
+VERSION = '0.12.1'
 ASSETS = Path(__file__).resolve().parent / 'static'
 SECURITY = None
 PATCHES = None
@@ -317,7 +317,7 @@ def write_provider(name, base_url, api_key, model, display, base_revision):
         if not isinstance(providers, dict):
             raise ValueError('provider_settings_invalid')
         old = providers.get(name, {})
-        if old and not provider_editability(old)[0]:
+        if name in providers and not provider_editability(old)[0]:
             raise ValueError('provider_requires_official_editor')
         key = api_key or old.get('apiKey', '')
         if not key:
@@ -398,27 +398,45 @@ def set_preference(waker, model):
     return r.returncode == 0, (r.stdout + r.stderr)[-160:]
 
 
+PROCESS_CONTROL = None
+
+
+def process_control():
+    global PROCESS_CONTROL
+    import importlib.util
+    with LOCK:
+        if PROCESS_CONTROL is None:
+            here = Path(__file__).resolve().parent
+            candidates = (here.parent / 'ops/process-control.py', here / 'process-control.py')
+            path = next((item for item in candidates if item.is_file() and not item.is_symlink()), None)
+            if path is None:
+                raise ValueError('process_controller_missing')
+            spec = importlib.util.spec_from_file_location('panel_process_control', path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            PROCESS_CONTROL = module
+    return PROCESS_CONTROL
+
+
 def daemon_process_state():
-    path = ROOT / 'process-state/daemon-cn.json'
-    if not path.is_file() or path.is_symlink():
-        return None
+    import shutil
     try:
-        value = json.loads(path.read_text())
-    except (OSError, ValueError, UnicodeDecodeError):
+        control = process_control()
+        value = control.read_state(ROOT / 'process-state/daemon-cn.json')
+        daemon = urlsplit(DAEMON)
+        binary = shutil.which(DAEMON_BIN) or DAEMON_BIN
+        if (value is None or value['name'] != 'daemon-cn' or
+                value['profile'] != 'daemon' or value['status'] != 'running' or
+                value['home'] != str(HOME.resolve(strict=False)) or
+                value['launch']['path'] != str(Path(binary).resolve(strict=True)) or
+                daemon.hostname not in ('127.0.0.1', 'localhost', '::1') or
+                value['port'] != (daemon.port or (443 if daemon.scheme == 'https' else 80)) or
+                control.identity_status(value) != 'match' or
+                control.port_status(value) != 'owned'):
+            return None
+        return value
+    except (OSError, ValueError, KeyError, TypeError):
         return None
-    required = {
-        'schemaVersion', 'name', 'profile', 'status', 'pid', 'startTicks',
-        'bootId', 'uid', 'executable', 'launch', 'script', 'cmdline',
-        'home', 'port', 'mode', 'endpoint', 'healthVersion', 'environment'
-    }
-    if (not isinstance(value, dict) or set(value) != required or
-            value.get('schemaVersion') != 1 or value.get('name') != 'daemon-cn' or
-            value.get('profile') != 'daemon' or value.get('status') != 'running' or
-            type(value.get('pid')) is not int or value['pid'] < 1 or
-            value.get('home') != str(HOME.resolve(strict=False)) or
-            value.get('mode') not in ('direct', 'gateway')):
-        return None
-    return value
 
 
 def restart_daemon():
@@ -437,6 +455,10 @@ def restart_daemon():
     state = daemon_process_state()
     if not state:
         return False, 'daemon 受管状态缺失或无效；请先用受管启动器建立精确身份记录'
+    env['QW_DAEMON_MODE'] = state['mode']
+    env['QW_CN_PORT'] = str(state['port'])
+    if state['mode'] == 'gateway':
+        env['QW_GW_URL'] = state['endpoint']
     status_run = subprocess.run(
         ['bash', str(qwa), 'cn', 'status'], capture_output=True,
         text=True, env=env, timeout=30)
@@ -881,6 +903,12 @@ def deletion_groups():
         detail = daemon_json('GET', '/api/conversation-surface-groups/' + quote(gid, safe=''))
         detail = detail.get('data', detail) if isinstance(detail, dict) else detail
         if not isinstance(detail, dict):
+            raise ValueError('invalid_group_detail')
+        group = detail.get('group', detail)
+        if not isinstance(group, dict):
+            raise ValueError('invalid_group_detail')
+        identifiers = [group[key] for key in ('id', 'groupId', 'group_id') if key in group]
+        if not identifiers or any(value != gid for value in identifiers):
             raise ValueError('invalid_group_detail')
         details.append(detail)
     return details
@@ -1367,10 +1395,11 @@ def runtime_state():
         proc = Path('/proc') / str(state['pid']) / 'environ'
         try:
             env = dict(v.split(b'=', 1) for v in proc.read_bytes().split(b'\0') if b'=' in v)
-            observed.append({
-                'hotDeploy': env.get(b'QODERWAKE_HOT_DEPLOY', b'').strip().lower() not in (b'0', b'false'),
-                'embeddingDisabled': env.get(b'QODER_MEMORY_DISABLE_EMBEDDING') == b'1'
-            })
+            if daemon_process_state() == state:
+                observed.append({
+                    'hotDeploy': env.get(b'QODERWAKE_HOT_DEPLOY', b'').strip().lower() not in (b'0', b'false'),
+                    'embeddingDisabled': env.get(b'QODER_MEMORY_DISABLE_EMBEDDING') == b'1'
+                })
         except (OSError, ValueError):
             pass
     return {'desired': policy, 'observed': observed,

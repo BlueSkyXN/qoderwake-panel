@@ -1,6 +1,6 @@
 # 部署、升级与发布
 
-适用于 Panel 0.12.0。运行时仅需 Python 标准库；Linux 受管启停还要求 `/proc`、bash，以及 Python / 内核的 pidfd 支持。连接快照使用 `ss`。本项目不安装 nginx，也不自动安装或启用 systemd。
+适用于 Panel 0.12.1 源码；当前发布与生产部署仍为 0.12.0。运行时仅需 Python 标准库；Linux 受管启停还要求 `/proc`、bash，以及 Python / 内核的 pidfd 支持。连接快照使用 `ss`。本项目不安装 nginx，也不自动安装或启用 systemd。
 
 ## 新部署
 
@@ -21,6 +21,22 @@ QW_PORT=19831
 5. 在浏览器登录表单中使用 `$QW_ROOT/admin-token.txt` 或 `viewer-token.txt`。只在部署机本地读取凭据，不放进 URL、日志或 issue。daemon 的 `.auth/token` 必须属于 Panel 运行用户，且没有 group/world 权限；认证失败时停下来核对官方认证与文件权限，不修改官方认证边界。
 
 非回环访问仍受认证、同源和 CSRF 检查，但 HTTP 不提供传输加密。原生 HTTPS 是可选能力，配置方法见 [README](../README.md#远程访问与原生-https)。升级时保留既有绑定和传输方式，不隐式改网络或系统信任。
+
+### TLS 实例的受管健康检查
+
+0.12.1 的 `restart-panel.sh` 根据 `QW_TLS_CERT` / `QW_TLS_KEY` 选择 HTTP 或 HTTPS；两文件必须同时配置。TLS 探测固定连接 `127.0.0.1:$QW_PORT`，不把证书主机名当作新的网络目的地。
+
+- `QW_HEALTH_SERVER_NAME`：证书覆盖的 DNS 名称，用于 SNI 与主机名验证；未设时验证回环 IP。
+- `QW_HEALTH_CA_FILE`：可选的可信 CA PEM，仅供该健康探测使用；未设时使用 Python 默认信任库，不修改系统信任。
+- 手工调用控制器时使用 `https://127.0.0.1:<port>/api/health`，并按需传 `--health-ca-file` / `--health-server-name`。证书错误不会通过探测，不提供跳过验证参数。
+
+### 显式上行开关与实例绑定
+
+受管 Panel 与 daemon 保留 `QODERWAKE_SESSION_PROJECTION_UPLINK`、`QODERWAKE_REMOTE_EXECUTION_UPLINK` 的显式值；只接受 0/1、false/true、off/on（忽略大小写和首尾空白）。未配置仍沿用官方默认行为，不据此宣称零上行。两个关闭项可能影响官方同步/远程执行上报，须由操作者明确选择。
+
+同一受管实例重启时，state 已记录为关闭的项若缺失或变为开启，会在停止旧进程前拒绝。确需改变该策略时，必须先使用匹配当前 state 的参数显式停止并保留恢复材料，再以新配置启动，不编辑 state 绕过检查。
+
+`status`、`stop`、`start` 都核对既有 state 与本次 HOME、端口、启动路径、命令和 mode/endpoint。更改 HOME、端口或 HTTP/TLS 协议时先按旧参数停止，不能用新地址的健康响应证明旧实例健康。state schema 仍为 1；格式兼容不代表旧非受管进程自动获得 state。
 
 ## 升级已受管的 Panel
 

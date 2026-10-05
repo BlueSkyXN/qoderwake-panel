@@ -4,6 +4,7 @@ import argparse
 from contextlib import contextmanager
 import fcntl
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ import secrets
 import select
 import signal
 import socket
+import ssl
 import stat
 import subprocess
 import sys
@@ -31,7 +33,11 @@ EXECUTABLE_KEYS = {'path', 'device', 'inode'}
 SAFE_NAME = re.compile(r'[a-z][a-z0-9-]{0,31}')
 BOOT_ID = re.compile(r'[0-9a-f-]{16,64}')
 HASH = re.compile(r'[0-9a-f]{64}')
-DAEMON_ENV = {
+UPLINK_ENV = {
+    'QODERWAKE_SESSION_PROJECTION_UPLINK',
+    'QODERWAKE_REMOTE_EXECUTION_UPLINK'
+}
+DAEMON_ENV = UPLINK_ENV | {
     'QODER_SDK_CUSTOM_BASE_URL_BYOK', 'QODERWAKE_HOT_DEPLOY',
     'QODER_MEMORY_DISABLE_EMBEDDING', 'QODERWAKE_HOME', 'QODER_ENV',
     'QODERWAKE_ENDPOINT_BASE_URL', 'QODERWAKE_PRODUCT_BASE_URL',
@@ -40,12 +46,13 @@ DAEMON_ENV = {
     'QODER_SERVER_ENDPOINT', 'QODER_CENTER_ENDPOINT',
     'QODER_CONFIG_SERVICE_URL'
 }
-PANEL_ENV = {
+PANEL_ENV = UPLINK_ENV | {
     'QW_ROOT', 'QW_HOME', 'QW_DAEMON_BIN', 'QW_DAEMON_URL',
     'QW_DAEMON_FRONTEND_TOKEN_FILE', 'QW_WHITELIST', 'QW_PORT',
     'QW_BIND', 'QW_PUBLIC_ORIGIN', 'QW_ALLOWED_CLIENTS', 'QW_REQUIRE_TLS',
-    'QW_TLS_CERT', 'QW_TLS_KEY', 'QW_GW_CONFIG', 'QW_GW_PORT',
-    'QW_PATCH_REGISTRY', 'QW_EXPERIMENTAL_PLUGIN_WRITES',
+    'QW_TLS_CERT', 'QW_TLS_KEY', 'QW_HEALTH_CA_FILE', 'QW_HEALTH_SERVER_NAME',
+    'QW_GW_CONFIG', 'QW_GW_PORT', 'QW_GW_USER', 'QW_GW_UPSTREAM',
+    'QW_CN_PORT', 'QW_PATCH_REGISTRY', 'QW_EXPERIMENTAL_PLUGIN_WRITES',
     'QODERWAKE_HOT_DEPLOY', 'QODER_MEMORY_DISABLE_EMBEDDING'
 }
 GATEWAY_ENV = {
@@ -428,15 +435,39 @@ def identity_status(state, proc_root='/proc'):
     return 'match' if actual == expected else 'mismatch'
 
 
-def health_version(url, timeout=2):
-    opener = urllib.request.build_opener(
-        urllib.request.ProxyHandler({}), NoRedirect())
+def health_version(url, timeout=2, ca_file=None, server_name=None):
+    parsed = urlsplit(url)
+    connection = None
+    raw_socket = None
     try:
-        with opener.open(url, timeout=timeout) as response:
-            raw = response.read(65537)
+        if (parsed.scheme not in ('http', 'https') or
+                parsed.hostname not in ('127.0.0.1', 'localhost', '::1') or
+                parsed.username or parsed.password or parsed.query or parsed.fragment or
+                parsed.path != '/api/health'):
+            return None
+        port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+        if parsed.scheme == 'https':
+            context = ssl.create_default_context(cafile=ca_file)
+            raw_socket = socket.create_connection((parsed.hostname, port), timeout)
+            connection = http.client.HTTPConnection(parsed.hostname, port, timeout=timeout)
+            connection.sock = context.wrap_socket(
+                raw_socket, server_hostname=server_name or parsed.hostname)
+        else:
+            if ca_file or server_name:
+                return None
+            connection = http.client.HTTPConnection(parsed.hostname, port, timeout=timeout)
+        connection.request('GET', parsed.path, headers={'Connection': 'close'})
+        response = connection.getresponse()
+        raw = response.read(65537)
+        status = response.status
     except Exception:
         return None
-    if len(raw) > 65536 or getattr(response, 'status', 200) != 200:
+    finally:
+        if connection is not None:
+            connection.close()
+        if raw_socket is not None:
+            raw_socket.close()
+    if len(raw) > 65536 or status != 200:
         return None
     try:
         value = json.loads(raw)
@@ -450,7 +481,8 @@ def health_version(url, timeout=2):
 class Controller:
     def __init__(self, root, name, profile, launch, home, port, mode,
                  log, health_url, endpoint=None, script=None,
-                 proc_root='/proc', expected_version=None):
+                 proc_root='/proc', expected_version=None,
+                 health_ca_file=None, health_server_name=None):
         if not SAFE_NAME.fullmatch(name):
             raise ValueError('invalid_process_name')
         if profile not in ('panel', 'daemon'):
@@ -468,12 +500,21 @@ class Controller:
         self.script = Path(script).resolve(strict=True) if script else None
         self.log = Path(log)
         health = urlsplit(health_url)
-        if (health.scheme != 'http' or health.hostname not in
+        if (health.scheme not in ('http', 'https') or health.hostname not in
                 ('127.0.0.1', 'localhost', '::1') or health.username or
-                health.password or health.fragment or
-                (health.port or 80) != self.port):
+                health.password or health.query or health.fragment or
+                health.path != '/api/health' or
+                (health.port or (443 if health.scheme == 'https' else 80)) != self.port):
             raise ValueError('invalid_process_health_url')
+        if health.scheme != 'https' and (health_ca_file or health_server_name):
+            raise ValueError('invalid_process_health_tls')
+        if health_server_name is not None and (
+                not isinstance(health_server_name, str) or
+                not re.fullmatch(r'[A-Za-z0-9_.:-]{1,253}', health_server_name)):
+            raise ValueError('invalid_process_health_tls')
         self.health_url = health_url
+        self.health_ca_file = health_ca_file
+        self.health_server_name = health_server_name
         if endpoint is not None:
             parsed = urlsplit(endpoint)
             if (parsed.scheme != 'http' or parsed.hostname not in
@@ -509,6 +550,9 @@ class Controller:
             key: value for key, value in os.environ.items()
             if key in allowed
         }
+        for key in UPLINK_ENV & environment.keys():
+            if environment[key].strip().lower() not in ('0', '1', 'false', 'true', 'off', 'on'):
+                raise ValueError('invalid_uplink_switch')
         if self.profile == 'panel':
             environment['QW_ROOT'] = str(self.root)
             environment['QW_HOME'] = str(self.home)
@@ -557,7 +601,33 @@ class Controller:
             os.close(directory)
 
     def read_state(self):
-        return read_state(self.state_file)
+        state = read_state(self.state_file)
+        if state is None:
+            return None
+        expected = {
+            'name': self.name, 'profile': self.profile, 'home': str(self.home),
+            'port': self.port, 'mode': self.mode, 'endpoint': self.endpoint,
+            'cmdline': self.command()
+        }
+        if any(state[key] != value for key, value in expected.items()):
+            raise ValueError('managed_process_instance_mismatch')
+        if state['launch']['path'] != str(self.launch) or (
+                state['script']['path'] if state['script'] else None) != (
+                str(self.script) if self.script else None):
+            raise ValueError('managed_process_instance_mismatch')
+        if self.profile == 'panel':
+            if state['environment'].get('QW_ROOT') != str(self.root):
+                raise ValueError('managed_process_instance_mismatch')
+            tls = bool(state['environment'].get('QW_TLS_CERT'))
+            if tls != (urlsplit(self.health_url).scheme == 'https'):
+                raise ValueError('managed_process_instance_mismatch')
+        return state
+
+    def health(self):
+        if self.health_ca_file or self.health_server_name:
+            return health_version(self.health_url, ca_file=self.health_ca_file,
+                                  server_name=self.health_server_name)
+        return health_version(self.health_url)
 
     def capture(self, pid, status='starting', version=None):
         observed = observe_process(pid, self.proc_root)
@@ -598,7 +668,7 @@ class Controller:
                     'running': False}
         identity = identity_status(state, self.proc_root)
         port = port_status(state, self.proc_root) if identity == 'match' else 'unknown'
-        version = health_version(self.health_url) if port == 'owned' else None
+        version = self.health() if port == 'owned' else None
         healthy = (identity == 'match' and port == 'owned' and
                    state['status'] == 'running' and version is not None and
                    version == state['healthVersion'])
@@ -608,6 +678,15 @@ class Controller:
             'identity': identity, 'port': port, 'pid': state['pid'],
             'mode': state['mode'], 'version': version
         }
+
+    def require_stoppable_port(self, state):
+        port = port_status(state, self.proc_root)
+        if port == 'other':
+            raise ValueError('managed_process_port_conflict')
+        if port == 'unknown':
+            raise ValueError('managed_process_port_visibility_required')
+        if port not in ('owned', 'unbound'):
+            raise ValueError('managed_process_port_visibility_required')
 
     def stop(self):
         state = self.read_state()
@@ -623,8 +702,7 @@ class Controller:
             return {'ok': True, 'name': self.name, 'stopped': True}
         if identity != 'match':
             raise ValueError('managed_process_identity_unknown')
-        if port_status(state, self.proc_root) == 'other':
-            raise ValueError('managed_process_port_conflict')
+        self.require_stoppable_port(state)
         if (not hasattr(os, 'pidfd_open') or
                 not hasattr(signal, 'pidfd_send_signal')):
             raise ValueError('managed_process_pidfd_required')
@@ -641,6 +719,7 @@ class Controller:
         try:
             if identity_status(state, self.proc_root) != 'match':
                 raise ValueError('managed_process_identity_unknown')
+            self.require_stoppable_port(state)
             signal.pidfd_send_signal(pidfd, signal.SIGTERM)
             ready, _, _ = select.select([pidfd], [], [], 10)
             if ready:
@@ -662,7 +741,20 @@ class Controller:
         return fd
 
     def start(self):
+        environment = self.environment()
+        if self.profile == 'panel':
+            cert, key = environment.get('QW_TLS_CERT'), environment.get('QW_TLS_KEY')
+            if bool(cert) != bool(key) or bool(cert) != (urlsplit(self.health_url).scheme == 'https'):
+                raise ValueError('invalid_process_health_tls')
+        if urlsplit(self.health_url).scheme == 'https':
+            ssl.create_default_context(cafile=self.health_ca_file)
         previous = self.read_state()
+        if previous is not None:
+            for name in UPLINK_ENV:
+                old = previous['environment'].get(name, '').strip().lower()
+                new = environment.get(name, '').strip().lower()
+                if old in ('0', 'false', 'off') and new not in ('0', 'false', 'off'):
+                    raise ValueError('managed_uplink_disable_not_preserved')
         if previous is not None:
             identity = identity_status(previous, self.proc_root)
             if identity == 'match':
@@ -697,7 +789,7 @@ class Controller:
             except (OSError, ValueError):
                 state = None
             if state and port_status(state, self.proc_root) == 'owned':
-                version = health_version(self.health_url)
+                version = self.health()
                 if version is not None and (
                         self.expected_version is None or
                         version == self.expected_version):
@@ -725,7 +817,8 @@ def controller_from_args(args):
         args.root, args.name, args.profile, args.launch, args.home,
         args.port, args.mode, args.log, args.health_url,
         endpoint=args.endpoint, script=args.script,
-        proc_root=args.proc_root, expected_version=args.expected_version)
+        proc_root=args.proc_root, expected_version=args.expected_version,
+        health_ca_file=args.health_ca_file, health_server_name=args.health_server_name)
 
 
 def main():
@@ -742,6 +835,8 @@ def main():
     parser.add_argument('--endpoint')
     parser.add_argument('--log', required=True)
     parser.add_argument('--health-url', required=True)
+    parser.add_argument('--health-ca-file')
+    parser.add_argument('--health-server-name')
     parser.add_argument('--expected-version')
     parser.add_argument('--proc-root', default='/proc', help=argparse.SUPPRESS)
     args = parser.parse_args()
