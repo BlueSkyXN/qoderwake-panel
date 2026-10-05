@@ -1,6 +1,6 @@
 # 部署、升级与发布
 
-适用于 Panel 0.12.1 源码；当前发布与生产部署仍为 0.12.0。运行时仅需 Python 标准库；Linux 受管启停还要求 `/proc`、bash，以及 Python / 内核的 pidfd 支持。连接快照使用 `ss`。本项目不安装 nginx，也不自动安装或启用 systemd。
+适用于 Panel 0.12.1。2026-10-05 已公开发布，并完成参考服务器 Panel 单独升级；生产 daemon/旧网关仍未首次迁管。运行时仅需 Python 标准库；Linux 受管启停还要求 `/proc`、bash，以及 Python / 内核的 pidfd 支持。连接快照使用 `ss`。本项目不安装 nginx，也不自动安装或启用 systemd。
 
 ## 新部署
 
