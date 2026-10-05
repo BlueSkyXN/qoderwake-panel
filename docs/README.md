@@ -1,5 +1,6 @@
 # 文档
 
+- [0.12.1 复查修复](development-0121.md)：八项缺口、新增回归、TLS 与状态兼容、未发布及未部署边界。
 - [0.12 P0 本地实现与隔离验收](development-012.md)：Provider CAS、删除预检、Maintenance、CLI session、网关 journal 与精确进程身份。
 - [0.11 修复与现场验收](development-011.md)：网关预检/失败恢复、技能只读、下载、分页、确认弹窗和实际启动开关（历史）。
 - [0.10 高级管理](development-010.md)：系统、会话、Artifact、Skill、自动化与 IM 配对。

@@ -72,6 +72,7 @@ class ManagerTests(unittest.TestCase):
         generation = self.snapshot()
         state = self.state(generation)
         with patch.object(self.manager, 'process_status', side_effect=['match', 'match']) as identity, \
+                patch.object(gm, 'gateway_port_status', return_value='owned'), \
                 patch.object(gm.os, 'pidfd_open', return_value=99, create=True), \
                 patch.object(gm.signal, 'pidfd_send_signal', create=True) as send, \
                 patch.object(gm.select, 'select', return_value=([99], [], [])) as wait, \

@@ -1,5 +1,9 @@
 from pathlib import Path
+import json
+import os
+import shutil
 import subprocess
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,9 +35,41 @@ class StartScriptTests(unittest.TestCase):
         control = (ROOT / 'ops/qw-ctl.sh').read_text()
         self.assertIn('process-control.py', restart)
         self.assertIn('process-control.py', control)
-        self.assertIn('--expected-version 0.12.0', restart)
+        self.assertIn('--expected-version 0.12.1', restart)
         for path in SCRIPTS[2:]:
             self.assertIn('qw-ctl.sh', path.read_text())
+
+    def test_restart_selects_tls_health_without_disabling_verification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'panel').mkdir()
+            (root / 'ops').mkdir()
+            shutil.copyfile(ROOT / 'panel/restart-panel.sh', root / 'panel/restart-panel.sh')
+            (root / 'ops/process-control.py').write_text(
+                'import json,sys;print(json.dumps(sys.argv[1:]))')
+            env = {key: value for key, value in os.environ.items() if not key.startswith('QW_')}
+            env.update(QW_ROOT=str(root / 'data'), PYTHONDONTWRITEBYTECODE='1')
+            plain = subprocess.run(['bash', str(root / 'panel/restart-panel.sh')],
+                                   env=env, check=True, capture_output=True, text=True)
+            plain_args = json.loads(plain.stdout)
+            self.assertEqual(plain_args[plain_args.index('--health-url') + 1],
+                             'http://127.0.0.1:19831/api/health')
+            self.assertNotIn('--health-ca-file', plain_args)
+            env.update(QW_ROOT=str(root / 'data'), QW_TLS_CERT='fixture.pem',
+                       QW_TLS_KEY='fixture.key', QW_HEALTH_CA_FILE='fixture-ca.pem',
+                       QW_HEALTH_SERVER_NAME='panel.example.test', PYTHONDONTWRITEBYTECODE='1')
+            result = subprocess.run(['bash', str(root / 'panel/restart-panel.sh')],
+                                    env=env, check=True, capture_output=True, text=True)
+            args = json.loads(result.stdout)
+            self.assertEqual(args[args.index('--health-url') + 1],
+                             'https://127.0.0.1:19831/api/health')
+            self.assertEqual(args[args.index('--health-ca-file') + 1], 'fixture-ca.pem')
+            self.assertEqual(args[args.index('--health-server-name') + 1], 'panel.example.test')
+            env.pop('QW_TLS_KEY')
+            result = subprocess.run(['bash', str(root / 'panel/restart-panel.sh')],
+                                    env=env, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(json.loads(result.stdout)['error'], 'both_tls_files_required')
 
     def test_direct_and_gateway_wrappers_are_explicit(self):
         direct = (ROOT / 'ops/start-cn-daemon-real.sh').read_text()

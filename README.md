@@ -1,6 +1,6 @@
 # QoderWake Panel
 
-自管 QoderWake 的增强面板与运维工具。当前版本 **0.12.0**，已通过 Linux CN daemon **1.1.6** 的面板单独升级验收；daemon 与旧网关未随此次升级重启，旧网关首次受管迁移仍未完成。
+自管 QoderWake 的增强面板与运维工具。当前源码版本 **0.12.1**，修复全面复查确认的八项安全与兼容性问题，见 [修复记录](docs/development-0121.md)。修复阶段已完成隔离回归；该阶段结束时已发布及生产部署仍为 **0.12.0**，daemon 验证基线为 Linux CN **1.1.6**。后续发布与生产部署分别核验，最新记录见 [验收矩阵](docs/acceptance.md)，不将源码版本当作现场版本。
 
 **它不是官方控制台的完整替代，也未实现整机零上行、受保护业务免登录或完全锁版。官方 memory Embedding 默认关闭，通用 Embedding BYOK 暂不作为主线。** 功能与证据边界见 [验收记录](docs/acceptance.md)。
 
@@ -45,7 +45,7 @@ export QW_PORT=19831
 python3 panel/qoderwake-panel.py
 ```
 
-完整保留 `panel/` 目录（包括 `panel_security.py`、`static/`）。面板已不再是单文件分发。
+完整保留 `panel/` 和 `ops/` 目录（包括 `panel_security.py`、`static/` 及 `ops/process-control.py`）。面板已不再是单文件分发；daemon 运行状态观测也复用精确进程控制器。
 
 浏览器访问 `http://127.0.0.1:19831/`。访问令牌在 `$QW_ROOT/admin-token.txt` 与 `$QW_ROOT/viewer-token.txt`，权限为 600，请仅在本机终端读取，不粘贴到日志或 issue。
 
@@ -68,6 +68,8 @@ export QW_TLS_KEY=/path/to/private-key.pem
 export QW_PUBLIC_ORIGIN=https://panel.example.com:19831
 python3 panel/qoderwake-panel.py
 ```
+
+使用 `panel/restart-panel.sh` 受管启动 TLS 实例时，健康探测固定连接本机回环，但可设置 `QW_HEALTH_SERVER_NAME=panel.example.com` 用于证书名称校验和 SNI；私有 CA 另设 `QW_HEALTH_CA_FILE=/path/to/ca.pem`，公有可信证书可不设 CA 文件。不得关闭证书验证。详见 [部署文档](docs/deployment.md)。
 
 未配置证书时仍为 HTTP，Cookie、CSRF、源 IP 限制均**不能替代传输加密**。当前部署按维护者选择继续使用 HTTP；HTTPS 不列为本阶段开发待办，界面保留事实提示。本项目不会擅自安装服务或改系统信任链。
 

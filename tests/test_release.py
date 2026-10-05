@@ -1,4 +1,5 @@
 import importlib.util
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -27,6 +28,26 @@ class ReleaseTests(unittest.TestCase):
             path.parent.mkdir(parents=True)
             path.write_text('{}')
             self.assertEqual(release.issues(root), [(str(path.relative_to(root)), 'local/generated artifact must not be published')])
+
+    def test_all_symlink_types_and_special_files_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'candidate'
+            root.mkdir()
+            for name in release.REQUIRED:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('fixture')
+            outside = Path(tmp) / 'outside'
+            outside.mkdir()
+            (outside / 'note.txt').write_text('synthetic-private-fixture')
+            (root / 'directory-link').symlink_to(outside, target_is_directory=True)
+            (root / 'broken-link').symlink_to(Path(tmp) / 'missing')
+            (root / 'file-link').symlink_to(outside / 'note.txt')
+            os.mkfifo(root / 'named-pipe')
+            found = dict(release.issues(root))
+            for name in ('directory-link', 'broken-link', 'file-link'):
+                self.assertEqual(found[name], 'symlink excluded from release')
+            self.assertEqual(found['named-pipe'], 'nonregular entry excluded from release')
 
     def test_gateway_dependencies_are_required(self):
         for name in ('panel/gateway_policy.py', 'panel/gateway_runtime.py', 'ops/gateway-manager.py', 'ops/process-control.py', 'ops/uplink-gw.py'):

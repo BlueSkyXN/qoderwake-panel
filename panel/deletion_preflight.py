@@ -208,7 +208,9 @@ def _workflow_model_match(row, models):
 def _group_parts(row):
     if not isinstance(row, dict):
         return None
-    group = row.get('group') if isinstance(row.get('group'), dict) else row
+    group = row.get('group', row)
+    if not isinstance(group, dict):
+        return None
     members = row.get('members', group.get('members'))
     leader = row.get('leader', group.get('leader'))
     if not isinstance(members, list) or leader is None:
@@ -218,16 +220,41 @@ def _group_parts(row):
 
 def _member_id(row):
     if isinstance(row, str):
-        return row
+        return _text(row).removeprefix('local:')
     if not isinstance(row, dict):
         return ''
-    target = row.get('target') if isinstance(row.get('target'), dict) else {}
-    for value in (row.get('wakerKey'), row.get('wakerId'), row.get('agentId'),
-                  row.get('id'), target.get('agentId'), target.get('wakerId'), target.get('id')):
-        result = _text(value)
-        if result:
-            return result.removeprefix('local:')
-    return ''
+    target = row.get('target', {})
+    if not isinstance(target, dict):
+        return ''
+    values = []
+    for container, keys in ((row, ('wakerKey', 'wakerId', 'agentId')),
+                            (target, ('agentId', 'wakerId', 'id'))):
+        for key in keys:
+            if key in container:
+                value = _text(container[key]).removeprefix('local:')
+                if not value:
+                    return ''
+                values.append(value)
+    if not values:
+        values.append(_text(row.get('id')).removeprefix('local:'))
+    return values[0] if values[0] and len(set(values)) == 1 else ''
+
+
+def _group_member_models(member):
+    if not _member_id(member):
+        raise SourceUnavailable('group_member_invalid')
+    def validate(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if 'model' in key.lower() and key not in MODEL_KEYS:
+                    raise SourceUnavailable('group_model_schema_unknown')
+                if key in TARGET_CONTAINER_KEYS or key in ('config', 'channel'):
+                    validate(item)
+        elif isinstance(value, list):
+            for item in value:
+                validate(item)
+    validate(member)
+    return _models(member)
 
 
 def _preference_models(value):
@@ -571,11 +598,12 @@ class DeletionPreflight:
                     continue
                 group, members, leader = parts
                 rows = list(members) + [leader]
-                if any(not isinstance(member, (dict, str)) for member in rows):
+                if any(not _member_id(member) for member in rows):
                     malformed = True
                     continue
                 try:
-                    if any(models.intersection(_models(member)) for member in rows if isinstance(member, dict)):
+                    references = [_group_member_models(member) for member in rows]
+                    if any(models.intersection(value) for value in references):
                         matched.append(group)
                 except SourceUnavailable:
                     malformed = True

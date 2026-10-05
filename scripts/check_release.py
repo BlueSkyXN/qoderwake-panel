@@ -22,11 +22,15 @@ def issues(root):
         if not (root/f).is_file():
             result.append((f,'required file missing'))
     for f in root.rglob('*'):
-        if not f.is_file() or '.git' in f.parts:
-            continue
         rel=f.relative_to(root).as_posix()
+        if '.git' in f.relative_to(root).parts:
+            continue
         if f.is_symlink():
             result.append((rel,'symlink excluded from release'));continue
+        if f.is_dir():
+            continue
+        if not f.is_file():
+            result.append((rel,'nonregular entry excluded from release'));continue
         if f.name in FORBIDDEN or f.match('settings.panel-bak-*.json') or f.suffix in ('.db','.sqlite','.sqlite3','.log','.jsonl','.bak','.pyc') or any(part in ('__pycache__','gateway-runtime','process-state','backups','patches') for part in f.relative_to(root).parts) or any(f.name.endswith(x) for x in ('.tar.gz','.tgz','.tar','.bak-p1')):
             result.append((rel,'local/generated artifact must not be published'));continue
         if rel == 'scripts/check_release.py':
