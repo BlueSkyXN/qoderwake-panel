@@ -17,6 +17,7 @@ SKILLS = [{'skillId':'readonly','name':'内置只读技能','pinned':True,'mutab
           {'skillId':'editable','name':'可编辑演示技能','pinned':False,'mutableByAgent':True,'currentVersionId':'v1'}]
 CONTENT = {'value':'# 示例技能\n\n保留末尾换行。\n', 'version':'v1'}
 DOWNLOADS = []
+CHAT = {'message': '尚未发送'}
 
 
 def deletion_scan(kind, target, revision=''):
@@ -99,10 +100,23 @@ if __name__=='__main__':
         app.daemon_json=daemon;app.console_op=lambda:(Opener(),{})
         app.deletion_scan=deletion_scan
         app.api_state=lambda:{'daemon':'running','models':[{'id':'fixture/model-a','name':'示例模型 A','provider':'fixture'}],'wakers':[{'id':'w1','name':'阻断删除演示','preference':'fixture/model-a'},{'id':'w2','name':'警告与未知结果演示','preference':'fixture/model-a'}],'whoami':None}
+        app.system_status=lambda:{'version':'1.1.6-fixture','activity':{'runningSessions':0,'runningConversationSessions':0,'runningConversationTasks':0,'runningTriggerSessions':0,'runningTriggerTasks':0,'queuedTriggerTasks':0,'hasRunningWork':False},'update':{'runningVersion':'1.1.6-fixture','installedVersion':'1.1.6-fixture','restartRequired':False}}
         revision='d'*64
         provider={'name':'fixture','baseUrl':'https://api.example.test/v1','type':'openai-compatible','authType':'bearer','models':['model-a'],'displayNames':['示例模型 A'],'keyConfigured':True,'panelManaged':True,'readOnlyReason':None}
         app.provider_store=lambda:type('FixtureProviders',(),{'summaries':lambda self:([provider],revision),'legacy_backups':lambda self:{'count':0,'totalBytes':0,'oldest':None},'read':lambda self:{'revision':revision,'data':{'providers':{'fixture':{'baseUrl':provider['baseUrl'],'apiKey':'fixture-secret-never-sent','type':'openai-compatible','authType':'bearer','model':'model-a','models':[{'model':'model-a','displayName':'示例模型 A'}]}}}}})()
         app.test_provider=lambda url,key:(True,'合成 fixture 未出网')
-        app.runtime_state=lambda:{'desired':{'hotDeploy':False,'embeddingDisabled':True},'effectiveOnPanelRestart':{'hotDeploy':False,'embeddingDisabled':True},'observed':[],'pendingRestart':True,'note':'合成数据，不连接官方服务'}
+        app.daemon_process_state=lambda:None
+        app.net_state=lambda:{'gw_alive':False,'cfg':{'mode':'enforce','sink_post_prefixes':[]},'active':{'managed':False,'healthy':False,'note':'旧网关未受管，不能判断已停止；自动切换已禁用'},'total':42,'up_bytes':1024,'fw':{'active_rules':0},'uplink':[],'poll':[],'residual':[],'logWindow':{'available':True,'bytesRead':65536,'truncated':True}}
+        app.patch_state=lambda:{'state':'unknown','version':None,'sha256':'','note':'合成 fixture 不修改二进制'}
+        app.patches=lambda:type('FixturePatches',(),{'status':lambda self:app.patch_state()})()
+        app.ROOT.mkdir(exist_ok=True)
+        app.RUNS=app.ROOT/'runs'
+        app.BACKUPS=app.ROOT/'backups'
+        app.gw_ask=lambda waker,message:(True,'合成 API 回复：'+message)
+        app.chat_new=lambda waker,title:'fixturechat1'
+        app.chat_send=lambda session,message:CHAT.update(message=message) is None
+        app.chat_sessions=lambda waker:[{'id':'fixturechat1','title':'合成验收会话','status':'success','startedAt':'2026-10-06'}]
+        app.chat_messages=lambda session:{'status':'success','messages':[{'role':'user','text':CHAT['message']},{'role':'assistant','text':'合成回复：'+CHAT['message']}]}
+        app.set_preference=lambda waker,model:(True,'合成偏好已保存')
         print('UI fixture http://127.0.0.1:%d'%args.port,flush=True)
         app.ThreadingHTTPServer(('127.0.0.1',args.port),app.H).serve_forever()

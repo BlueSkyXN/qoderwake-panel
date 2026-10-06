@@ -106,6 +106,35 @@ class ManagerTests(unittest.TestCase):
             0o640)
         self.assertTrue((Path(generation['path']) / 'gateway_runtime.py').is_file())
 
+    def test_log_directory_is_private_and_legacy_log_untouched(self):
+        self.manager.root = self.root.resolve()
+        directory = self.manager.root / 'logs'
+        directory.mkdir()
+        legacy = directory / 'uplink-gw.jsonl'
+        legacy.write_bytes(b'legacy-evidence')
+        self.manager.prepare_log()
+        self.assertEqual(legacy.read_bytes(), b'legacy-evidence')
+        self.assertEqual((directory / 'gateway').stat().st_mode & 0o777, 0o700)
+        self.assertEqual((directory / 'gateway/uplink-gw.jsonl').stat().st_mode & 0o777, 0o600)
+
+    def test_log_preparation_rejects_fifo_and_hardlink_without_chmod(self):
+        self.manager.root = self.root.resolve()
+        audit = self.manager.root / 'logs/gateway'
+        audit.mkdir(parents=True)
+        log = audit / 'uplink-gw.jsonl'
+        os.mkfifo(log)
+        with self.assertRaises((ValueError, OSError)):
+            self.manager.prepare_log()
+        log.unlink()
+        target = self.manager.root / 'target'
+        target.write_bytes(b'private')
+        target.chmod(0o640)
+        os.link(target, log)
+        with self.assertRaises(ValueError):
+            self.manager.prepare_log()
+        self.assertEqual(target.stat().st_mode & 0o777, 0o640)
+        self.assertEqual(target.read_bytes(), b'private')
+
     def test_launch_environment_is_positive_allowlist(self):
         generation = self.snapshot()
         with patch.dict(os.environ, {

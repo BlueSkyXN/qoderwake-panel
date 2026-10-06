@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Loopback control-plane proxy. Strict policy covers only requests routed here."""
 import argparse
+import fcntl
+import stat
 import hashlib
 import json
 import os
@@ -17,14 +19,14 @@ from urllib.parse import urlsplit
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / 'panel' if (HERE.parent / 'panel/gateway_policy.py').is_file() else HERE))
 from gateway_policy import DEFAULT_CFG, MAX_BODY, decision, policy_hash, validate_cfg
-from gateway_runtime import STATE_VERSION, validate_port, validate_upstream
+from gateway_runtime import STATE_VERSION, _open_directory, validate_port, validate_upstream
 
 PORT = validate_port(int(os.environ.get('QW_GW_PORT') or 19840))
 ROOT = Path(os.environ.get('QW_ROOT') or Path.home() / 'qoderwake-panel').resolve(strict=False)
 UPSTREAM = validate_upstream(os.environ.get('QW_GW_UPSTREAM') or 'openapi.qoder.com.cn')
 CFG_FILE = Path(os.environ.get('QW_GW_CONFIG') or ROOT / 'config/uplink-gw.json')
 EXPECTED_CONFIG_HASH = os.environ.get('QW_GW_CONFIG_HASH') or ''
-LOG = ROOT / 'logs' / 'uplink-gw.jsonl'
+LOG = ROOT / 'logs' / 'gateway' / 'uplink-gw.jsonl'
 CHUNK = 8192
 MAX_BODY = 1024 * 1024
 REWRITE_FROM = b'https://openapi.qoder.com.cn'
@@ -43,18 +45,69 @@ def load_cfg():
     return cfg
 
 
-def prepare_log():
-    LOG.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd = os.open(LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, 'O_NOFOLLOW', 0), 0o600)
-    os.close(fd)
+LOG_MAX_BYTES = 8 * 1024 * 1024
+LOG_BACKUPS = 3
+MAX_LOG_RECORD = 16384
+
+
+def log_entry(directory, name, required=False):
+    try:
+        info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+    except FileNotFoundError:
+        if required:
+            raise ValueError('gateway_log_missing')
+        return None
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
+            info.st_uid != os.geteuid() or info.st_mode & 0o077):
+        raise ValueError('unsafe_gateway_log')
+    return info
 
 
 def logline(rec):
+    payload = (json.dumps(rec, ensure_ascii=False) + '\n').encode() if rec is not None else b''
+    if len(payload) > MAX_LOG_RECORD:
+        raise ValueError('gateway_log_record_too_large')
     with _loglock:
         LOG.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        fd = os.open(LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, 'O_NOFOLLOW', 0), 0o600)
-        with os.fdopen(fd, 'a') as stream:
-            stream.write(json.dumps(rec, ensure_ascii=False)+'\n')
+        directory = _open_directory(LOG.parent)
+        lock = -1
+        try:
+            lockname = LOG.name + '.lock'
+            log_entry(directory, lockname)
+            lock = os.open(lockname, os.O_WRONLY | os.O_CREAT | os.O_NONBLOCK |
+                           getattr(os, 'O_NOFOLLOW', 0), 0o600, dir_fd=directory)
+            log_entry(directory, lockname, required=True)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            names = [LOG.name] + [LOG.name + '.' + str(i) for i in range(1, LOG_BACKUPS + 1)]
+            entries = [log_entry(directory, name) for name in names]
+            current = entries[0]
+            if payload and current and current.st_size and current.st_size + len(payload) > LOG_MAX_BYTES:
+                if entries[-1]:
+                    os.unlink(names[-1], dir_fd=directory)
+                for index in range(LOG_BACKUPS - 1, -1, -1):
+                    if entries[index]:
+                        os.replace(names[index], names[index + 1], src_dir_fd=directory, dst_dir_fd=directory)
+                os.fsync(directory)
+            fd = os.open(LOG.name, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NONBLOCK |
+                         getattr(os, 'O_NOFOLLOW', 0), 0o600, dir_fd=directory)
+            try:
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid():
+                    raise ValueError('unsafe_gateway_log')
+                with os.fdopen(fd, 'ab') as stream:
+                    fd = -1
+                    stream.write(payload)
+            finally:
+                if fd >= 0:
+                    os.close(fd)
+        finally:
+            if lock >= 0:
+                os.close(lock)
+            os.close(directory)
+
+
+def prepare_log():
+    logline(None)
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):

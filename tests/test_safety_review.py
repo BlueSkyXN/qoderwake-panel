@@ -304,13 +304,14 @@ class RuntimeIdentityTests(unittest.TestCase):
         self.assertIsNone(app.daemon_process_state())
         value = app.runtime_state()
         self.assertEqual(value['observed'], [])
-        self.assertTrue(value['pendingRestart'])
+        self.assertIsNone(value['pendingRestart'])
+        self.assertEqual(value['observation'], 'unknown')
 
     def test_pid_reuse_is_unknown_not_applied(self):
         path = self.fixture.process / 'stat'
         path.write_text(path.read_text().replace('987654', '987655'))
         self.assertIsNone(app.daemon_process_state())
-        self.assertTrue(app.runtime_state()['pendingRestart'])
+        self.assertIsNone(app.runtime_state()['pendingRestart'])
 
     def test_environment_read_is_bracketed_by_identity_checks(self):
         state = app.daemon_process_state()
@@ -400,7 +401,7 @@ class TLSHealthTests(unittest.TestCase):
         controller = pc.Controller(
             data, 'panel', 'panel', sys.executable, home, port, 'panel', data / 'panel.log',
             'https://127.0.0.1:%d/api/health' % port,
-            script=source / 'panel/qoderwake-panel.py', expected_version='0.12.1',
+            script=source / 'panel/qoderwake-panel.py', expected_version='0.12.2',
             health_ca_file=str(self.cert), health_server_name='panel.example.test')
         environment = {'QW_BIND': '127.0.0.1', 'QW_TLS_CERT': str(self.cert),
                        'QW_TLS_KEY': str(self.key), 'QW_DAEMON_URL': 'http://127.0.0.1:1'}

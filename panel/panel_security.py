@@ -15,6 +15,7 @@ from pathlib import Path
 COOKIE = 'qwp_session'
 IDLE_TTL = 12 * 3600
 MAX_TTL = 7 * 86400
+SEEN_INTERVAL = 60
 
 
 class AccessError(Exception):
@@ -290,7 +291,8 @@ class Security:
             if not row or now-row[3] > MAX_TTL or now-row[4] > IDLE_TTL or not hmac.compare_digest(row[1], self.credential(row[0])):
                 con.execute('DELETE FROM sessions WHERE id=?', (sid,))
                 raise AccessError(401, 'session_expired')
-            con.execute('UPDATE sessions SET seen=? WHERE id=?', (now, sid))
+            if now - row[4] >= SEEN_INTERVAL:
+                con.execute('UPDATE sessions SET seen=? WHERE id=? AND seen<=?', (now, sid, now - SEEN_INTERVAL))
         return {'role': row[0], 'principal': 'session:' + sid[:12], 'source': 'cookie', 'csrf': row[2], 'sid': sid}
 
     def create_caller(self, name, wakers, quota, days):

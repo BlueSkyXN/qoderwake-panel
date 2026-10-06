@@ -483,7 +483,9 @@ class PanelTests(unittest.TestCase):
     def test_runtime_display_uses_saved_policy_not_panel_environment(self):
         app.atomic_json(self.root/'runtime-policy.json',{'hotDeploy':True,'embeddingDisabled':False})
         with patch.dict(os.environ,{'QODERWAKE_HOT_DEPLOY':'0','QODER_MEMORY_DISABLE_EMBEDDING':'1'}):
-            self.assertEqual(app.runtime_state()['effectiveOnPanelRestart'],{'hotDeploy':True,'embeddingDisabled':False})
+            effective = app.runtime_state()['effectiveOnPanelRestart']
+            self.assertEqual({key: effective[key] for key in ('hotDeploy', 'embeddingDisabled')},
+                             {'hotDeploy': True, 'embeddingDisabled': False})
 
     def test_new_turn_resets_completion_and_snapshot_ids(self):
         def event(role,text='',mid=None):
