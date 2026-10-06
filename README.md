@@ -1,6 +1,6 @@
 # QoderWake Panel
 
-自管 QoderWake 的增强面板与运维工具。当前源码为 **0.12.2 候选，未发布、未部署**；集中修复运行态、上行开关、日志轮转、状态/用量性能与浏览器路由，见 [统一修复验收](docs/development-0122.md)。公开 Release 与参考生产 Panel 保持 **0.12.1**（2026-10-05），当次仅升级 Panel、17/17 运行文件核验通过；daemon 基线仍为 Linux CN **1.1.6**，daemon 和旧网关未首次迁管。源码发布、部署与真实业务验收分别记录在 [验收矩阵](docs/acceptance.md)。
+自管 QoderWake 的增强面板与运维工具。当前源码、公开 Release 与参考生产 Panel 均为 **0.12.2**（2026-10-06）；集中修复运行态、上行开关、日志读取、状态/用量性能与浏览器路由，见 [统一修复验收](docs/development-0122.md)。服务器仅升级 Panel，**19/19 运行文件**核验通过；daemon 基线仍为 Linux CN **1.1.6**，daemon 和旧网关未重启或首次迁管。因此面板尾读优化已生效，网关日志轮转尚未在生产启用。源码发布、部署与真实业务验收分别记录在 [验收矩阵](docs/acceptance.md)。
 
 **它不是官方控制台的完整替代，也未实现整机零上行、受保护业务免登录或完全锁版。官方 memory Embedding 默认关闭，通用 Embedding BYOK 暂不作为主线。** 功能与证据边界见 [验收记录](docs/acceptance.md)。
 
@@ -113,6 +113,6 @@ bash scripts/check-release.sh
 
 Node 仅用于开发期 JavaScript 语法和回归测试。发布检查只检查候选目录，不拷贝、不 commit、不 push。测试缓存、实际配置、数据库、令牌、备份不得进公开快照；检查通过不等于安全认证。
 
-[公开仓](https://github.com/BlueSkyXN/qoderwake-panel) 与 [v0.12.1 Release](https://github.com/BlueSkyXN/qoderwake-panel/releases/tag/v0.12.1) 已发布，两个源码附件重新下载验证为 66/66 文件与标签提交一致。0.12.0 与 0.12.1 标签和附件保持原样；后续 `main` 可补充交付文档而不移动标签。基线、两仓职责和 PR 规则见 [维护约定](docs/maintenance.md)。
+[公开仓](https://github.com/BlueSkyXN/qoderwake-panel) 与 [v0.12.2 Release](https://github.com/BlueSkyXN/qoderwake-panel/releases/tag/v0.12.2) 已发布，两个源码附件重新下载验证为 71/71 文件与标签提交一致。既有版本标签和附件保持原样；后续 `main` 可补充交付文档而不移动标签。基线、两仓职责和 PR 规则见 [维护约定](docs/maintenance.md)。
 
 详细设计：[网络控制](docs/uplink-control.md) · [验收状态](docs/acceptance.md) · [部署与升级](docs/deployment.md) · [维护与 PR](docs/maintenance.md)。

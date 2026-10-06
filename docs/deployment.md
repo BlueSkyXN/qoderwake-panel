@@ -1,6 +1,6 @@
 # 部署、升级与发布
 
-适用于 Panel 0.12.2 源码候选；公开与生产版本仍为 0.12.1。2026-10-05 仅完成 0.12.1 Panel 单独升级；生产 daemon/旧网关仍未首次迁管。运行时仅需 Python 标准库；Linux 受管启停还要求 `/proc`、bash，以及 Python / 内核的 pidfd 支持。连接快照使用 `ss`。本项目不安装 nginx，也不自动安装或启用 systemd。
+适用于 Panel 0.12.2。2026-10-06 已公开发布，并完成参考生产 Panel 单独升级，19/19 运行文件一致；生产 daemon/旧网关未重启或首次迁管，网关日志轮转尚未在该旧网关启用。运行时仅需 Python 标准库；Linux 受管启停还要求 `/proc`、bash，以及 Python / 内核的 pidfd 支持。连接快照使用 `ss`。本项目不安装 nginx，也不自动安装或启用 systemd。
 
 ## 新部署
 
@@ -60,14 +60,14 @@ QW_PORT=19831
 
 Panel、daemon 和网关分别迁移。只升级 Panel 时，不顺带停止或替换生产 daemon / 网关；网关首次迁移需要独立的规则、启动、业务与精确回滚验收。
 
-## 0.12.2 候选的兼容事项
+## 0.12.2 的兼容事项
 
 - 必须包含新增 `panel/log_io.py` 和 `panel/usage_store.py`；扁平部署也需与主脚本同目录，不只替换主文件。
 - `runtime-policy.json` 可选 `sessionProjectionUplink` / `remoteExecutionUplink` 为 true、false 或 null；null/缺失表示继承 Panel 启动环境，不代表关闭。网页保存不会重启；这些文件设置只在 Panel 发起 daemon 启动时转换为环境变量，手工 CLI 启动仍须显式设置相应变量。
 - `/api/runtime` 的 `pendingRestart:null` 表示未知，客户端不得将其转成已应用或必须重启。缺少受管身份时页面禁用自动重启，但不伪造 state 或停掉旧进程。
 - 新网关日志目录是 `$QW_ROOT/logs/gateway/`，由管理器设为网关用户所有、0700；文件为 0600，每份上限 8 MiB，保留三份历史。父目录必须允许该用户遍历；Panel 读取也须具备权限，否则页面显示日志不可读，不自动放宽权限。旧 `$QW_ROOT/logs/uplink-gw.jsonl` 保留原样，新文件存在后面板优先读取新目录。
 - `usage.db` 自动新增游标和重复行计数表，旧事件不重计；首次回填按请求继续，不再因为大于 16 MiB 整份跳过。升级前仍做一致备份，旧版回滚不能使用新游标能力。
-- 此候选没有自动迁管、systemd 或生产升级动作；统一验收见 [修复记录](development-0122.md)。
+- 工具不自动迁管或安装 systemd。参考生产已按独立步骤仅升级 Panel，daemon/旧网关保持不变；隔离回滚通过不等于生产回滚，交付证据见 [验收矩阵](acceptance.md)，修复阶段见 [记录](development-0122.md)。
 
 ## 干净快照发布
 
