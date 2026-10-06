@@ -56,7 +56,7 @@
 
 网关子进程环境从空白正向构造，不继承 proxy、Python 注入、Panel token 或父进程其他 secret。upstream 只允许两个内建官方域；响应 URL rewrite 使用验证后的实际端口。QCS hash-pinned 补丁仍固定 19840，所以非默认 gateway port 下明确拒绝补丁 plan，不做静默错配。
 
-`operation.json` 记录 prepared/new-started/committing。恢复只停止精确识别的候选；只有可验证 `exited` 才启动另一代。未知 listener、候选身份不可读或 `/proc` 可见性不完整时保留 journal 与 generation，要求人工处理。publish 成功后的 journal 清理故障不会回滚已提交代际。state/journal symlink 或读取异常会阻断 GC；GC 先将候选原子移入同目录 quarantine，再重新扫描 current、previous、journal 与 `/proc` 引用，新引用或可见性不完整时原子恢复；管理器下次取得锁时先恢复崩溃遗留 quarantine，原路径冲突则要求人工处理。日志轮转仍未包含在本批，JSONL 日志当前无界，需独立运维批次处理。
+`operation.json` 记录 prepared/new-started/committing。恢复只停止精确识别的候选；只有可验证 `exited` 才启动另一代。未知 listener、候选身份不可读或 `/proc` 可见性不完整时保留 journal 与 generation，要求人工处理。publish 成功后的 journal 清理故障不会回滚已提交代际。state/journal symlink 或读取异常会阻断 GC；GC 先将候选原子移入同目录 quarantine，再重新扫描 current、previous、journal 与 `/proc` 引用，新引用或可见性不完整时原子恢复；管理器下次取得锁时先恢复崩溃遗留 quarantine，原路径冲突则要求人工处理。0.12.0 当时未包含日志轮转。0.12.2 候选已增加专用日志目录和 8 MiB / 三份历史轮转，面板总尾读不超过 1 MiB；生产旧网关尚未升级，其日志仍不受候选轮转约束，旧文件不会自动删除。
 
 Panel 与 daemon 启停统一委托 `ops/process-control.py`。state 绑定 PID/start ticks/boot ID/executable/argv/HOME/mode/port/socket owner/health version；`restart-panel.sh`、`qw-ctl.sh` 与 direct/gateway/sdkflag 包装不再按进程名批量杀进程。旧生产进程没有该 state，必须在后续维护窗口完成首次迁移、健康核对和 rollback 演练；本批没有执行。
 

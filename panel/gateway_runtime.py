@@ -150,10 +150,11 @@ def validate_state(value, store, root, port, require_directory=True):
 def _open_directory(path):
     path = Path(os.path.abspath(os.fspath(path)))
     flags = os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0) | getattr(os, 'O_NOFOLLOW', 0)
-    fd = os.open(path.anchor or '/', flags)
+    traverse = getattr(os, 'O_PATH', os.O_RDONLY) | getattr(os, 'O_DIRECTORY', 0) | getattr(os, 'O_NOFOLLOW', 0)
+    fd = os.open(path.anchor or '/', traverse if len(path.parts) > 1 else flags)
     try:
-        for part in path.parts[1:]:
-            child = os.open(part, flags, dir_fd=fd)
+        for index, part in enumerate(path.parts[1:], 1):
+            child = os.open(part, flags if index == len(path.parts) - 1 else traverse, dir_fd=fd)
             os.close(fd)
             fd = child
         return fd

@@ -30,7 +30,7 @@ class GatewayTests(unittest.TestCase):
             thread = threading.Thread(target=server.serve_forever,daemon=True)
             thread.start()
             try:
-                with patch.object(gw,'LOG',Path(tmp)/'audit.jsonl'), patch.object(gw.urllib.request,'build_opener') as opener:
+                with patch.object(gw,'LOG',Path(tmp).resolve()/'audit.jsonl'), patch.object(gw.urllib.request,'build_opener') as opener:
                     con = http.client.HTTPConnection('127.0.0.1',server.server_port,timeout=3)
                     con.request('POST','/private-id?secret=value',b'secret-body',{'Authorization':'Bearer secret-key'})
                     response=con.getresponse()
@@ -38,7 +38,7 @@ class GatewayTests(unittest.TestCase):
                     response.read();con.close()
                     server.shutdown();thread.join()
                     opener.assert_not_called()
-                    log=(Path(tmp)/'audit.jsonl').read_text()
+                    log=(Path(tmp).resolve()/'audit.jsonl').read_text()
                     self.assertNotIn('secret',log)
                     self.assertNotIn('private-id',log)
                     self.assertFalse(json.loads(log)['forward_attempted'])
@@ -57,7 +57,7 @@ class GatewayTests(unittest.TestCase):
             server=gw.ThreadingHTTPServer(('127.0.0.1',0),Handler)
             thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
             try:
-                with patch.object(gw,'LOG',Path(tmp)/'log'), patch.object(gw.urllib.request,'build_opener') as factory:
+                with patch.object(gw,'LOG',Path(tmp).resolve()/'log'), patch.object(gw.urllib.request,'build_opener') as factory:
                     factory.return_value.open.return_value=Response(raw)
                     con=http.client.HTTPConnection('127.0.0.1',server.server_port,timeout=3)
                     con.request('GET','/catalog',headers={'Authorization':'Bearer private','Accept':'application/json','Cookie':'private','Proxy-Authorization':'private'})
@@ -71,7 +71,7 @@ class GatewayTests(unittest.TestCase):
                     self.assertNotIn('Cookie',request.headers)
                     self.assertNotIn('Proxy-authorization',request.headers)
                     self.assertEqual(request.headers['Accept'],'application/json')
-                    self.assertEqual(json.loads((Path(tmp)/'log').read_text())['path'],'/catalog')
+                    self.assertEqual(json.loads((Path(tmp).resolve()/'log').read_text())['path'],'/catalog')
                     server.shutdown();thread.join()
             finally:
                 server.shutdown();server.server_close();thread.join()
@@ -84,7 +84,7 @@ class GatewayTests(unittest.TestCase):
             server=gw.ThreadingHTTPServer(('127.0.0.1',0),Handler)
             thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
             try:
-                with patch.object(gw,'LOG',Path(tmp)/'audit'), patch.object(gw.urllib.request,'build_opener') as opener:
+                with patch.object(gw,'LOG',Path(tmp).resolve()/'audit'), patch.object(gw.urllib.request,'build_opener') as opener:
                     for header in (b'Transfer-Encoding: chunked', b'Content-Length: 1\r\nContent-Length: 2', b'Content-Length: bad'):
                         with socket.create_connection(server.server_address,timeout=3) as sock:
                             sock.sendall(b'POST /private HTTP/1.1\r\nHost: localhost\r\n'+header+b'\r\n\r\n')
@@ -96,7 +96,7 @@ class GatewayTests(unittest.TestCase):
                             self.assertIn(b'400 Bad Request',data)
                     server.shutdown();thread.join()
                     opener.assert_not_called()
-                    rows=[json.loads(x) for x in (Path(tmp)/'audit').read_text().splitlines()]
+                    rows=[json.loads(x) for x in (Path(tmp).resolve()/'audit').read_text().splitlines()]
                     self.assertEqual(len(rows),3)
                     self.assertTrue(all(r['status']==400 and not r['forward_attempted'] for r in rows))
             finally:
@@ -113,7 +113,7 @@ class GatewayTests(unittest.TestCase):
 
     def test_invalid_config_does_not_fall_back_to_observe(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path=Path(tmp)/'config.json';path.write_text('{')
+            path=Path(tmp).resolve()/'config.json';path.write_text('{')
             with patch.object(gw,'CFG_FILE',path), self.assertRaises(ValueError):
                 gw.load_cfg()
             path.unlink()

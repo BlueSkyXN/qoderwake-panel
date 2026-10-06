@@ -313,17 +313,34 @@ class Manager:
         if directory.is_symlink():
             raise ValueError('symlink_rejected')
         directory.mkdir(parents=True, exist_ok=True)
-        for name in ('uplink-gw.jsonl', 'uplink-gw-manager.log'):
-            path = directory / name
-            fd = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY |
-                         getattr(os, 'O_NOFOLLOW', 0), 0o600)
+        parent = _open_directory(directory)
+        audit_fd = -1
+        try:
             try:
-                if os.geteuid() == 0:
-                    os.fchown(fd, self.account.pw_uid,
-                              self.account.pw_gid)
-                os.fchmod(fd, 0o600)
-            finally:
-                os.close(fd)
+                os.mkdir('gateway', mode=0o700, dir_fd=parent)
+            except FileExistsError:
+                pass
+            audit_fd = os.open('gateway', os.O_RDONLY | os.O_DIRECTORY |
+                               getattr(os, 'O_NOFOLLOW', 0), dir_fd=parent)
+            if os.geteuid() == 0:
+                os.fchown(audit_fd, self.account.pw_uid, self.account.pw_gid)
+            os.fchmod(audit_fd, 0o700)
+            for store, name in ((audit_fd, 'uplink-gw.jsonl'), (parent, 'uplink-gw-manager.log')):
+                fd = os.open(name, os.O_CREAT | os.O_APPEND | os.O_WRONLY | os.O_NONBLOCK |
+                             getattr(os, 'O_NOFOLLOW', 0), 0o600, dir_fd=store)
+                try:
+                    info = os.fstat(fd)
+                    if not __import__('stat').S_ISREG(info.st_mode) or info.st_nlink != 1:
+                        raise ValueError('unsafe_gateway_log')
+                    if os.geteuid() == 0:
+                        os.fchown(fd, self.account.pw_uid, self.account.pw_gid)
+                    os.fchmod(fd, 0o600)
+                finally:
+                    os.close(fd)
+        finally:
+            if audit_fd >= 0:
+                os.close(audit_fd)
+            os.close(parent)
 
     def preflight_candidate(self, candidate):
         generation = self.snapshot(candidate)

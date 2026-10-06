@@ -21,7 +21,7 @@ import socket
 import stat
 import tempfile
 import ssl
-from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit, quote, urlencode
 from panel_security import Security, AccessError, AdmissionController, COOKIE
 from panel_patches import PatchManager
@@ -29,6 +29,8 @@ from provider_config import ProviderSettings, ProviderProbePlans, SettingsConfli
 from deletion_preflight import DeletionPreflight
 from daemon_transport import DaemonSession, DaemonTransportError, MAX_BOOTSTRAP_BYTES
 from gateway_policy import validate_cfg, policy_hash
+from log_io import tail_records
+import usage_store
 from gateway_runtime import (
     STATE_VERSION, gateway_port_status, identity_status, load_state,
     verify_generation_files
@@ -54,7 +56,7 @@ DAEMON_BIN = os.environ.get('QW_DAEMON_BIN') or 'qoderwake-cn'
 DAEMON = os.environ.get('QW_DAEMON_URL') or 'http://127.0.0.1:19830'
 PORT = int(os.environ.get('QW_PORT') or 19831)
 BIND = os.environ.get('QW_BIND') or '127.0.0.1'
-VERSION = '0.12.1'
+VERSION = '0.12.2'
 ASSETS = Path(__file__).resolve().parent / 'static'
 SECURITY = None
 PATCHES = None
@@ -154,26 +156,40 @@ def api_state():
         d = daemon_json('GET', '/api/agents', timeout=8)
         items = d.get('data', d) if isinstance(d, dict) else d
         items = items if isinstance(items, list) else items.get('list', [])
-        for a in items:
-            pref = '(未知)'
-            try:
-                value = deletion_preference(a.get('agentId', ''))
-                model = value.get('noProject')
-                if isinstance(model, str):
-                    pref = model or '(默认 auto)'
-            except Exception:
-                pass
-            st['wakers'].append({'id': a.get('agentId'), 'name': a.get('name'), 'preference': pref})
+        if not isinstance(items, list) or any(not isinstance(a, dict) for a in items):
+            raise ValueError('invalid_waker_list')
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            st['wakers'] = list(pool.map(waker_summary, items))
     except Exception:
         st['error'] = 'daemon_unavailable'
     try:
-        r = cli('whoami', timeout=25)
-        mm = re.search(r'Name:\s*(\S+).*Token expires:\s*([^\n]+)', r.stdout, re.S)
-        if mm:
-            st['whoami'] = {'name': mm.group(1), 'expires': mm.group(2).strip()}
+        value = object_data(daemon_json('GET', '/api/frontend-auth/me', timeout=8))
+        profile = value.get('profile')
+        if value.get('authenticated') is True and isinstance(profile, dict):
+            name = profile.get('name')
+            if isinstance(name, str):
+                st['whoami'] = {'name': name[:200]}
     except Exception:
         pass
     return st
+
+
+def waker_summary(item):
+    pref = '(未知)'
+    try:
+        value = deletion_preference(item.get('agentId', ''))
+        model = value.get('noProject')
+        if model is None or model == '':
+            pref = '(默认 auto)'
+        elif isinstance(model, str):
+            pref = model
+        elif isinstance(model, dict):
+            names = [model[key] for key in ('modelId', 'model') if key in model]
+            if names and all(isinstance(name, str) and name.strip() for name in names) and len(set(names)) == 1:
+                pref = names[0]
+    except Exception:
+        pass
+    return {'id': item.get('agentId'), 'name': item.get('name'), 'preference': pref}
 
 
 def provider_store():
@@ -192,52 +208,12 @@ USAGE_LOCK = threading.Lock()
 
 
 def init_db():
-    ROOT.mkdir(parents=True, exist_ok=True)
-    fd = os.open(DB, os.O_WRONLY | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0), 0o600)
-    os.close(fd)
-    os.chmod(DB, 0o600)
-    with sqlite3.connect(DB) as con:
-        con.execute('CREATE TABLE IF NOT EXISTS usage_events(event_key TEXT PRIMARY KEY, day TEXT, model TEXT, run TEXT, timestamp TEXT)')
-        con.execute('CREATE TABLE IF NOT EXISTS usage_files(path TEXT PRIMARY KEY, size INTEGER, mtime INTEGER)')
-    con.close()
+    usage_store.initialize(DB)
 
 
 def usage_data():
-    # Event identity is independent of scan-window size; missing logs cannot be reconstructed.
     with USAGE_LOCK:
-        init_db()
-        con = sqlite3.connect(DB)
-        for run in RUNS.glob('*/qodercli.log'):
-            try:
-                info = run.stat()
-                if info.st_size > 16 * 1024 * 1024:
-                    continue
-                prev = con.execute('SELECT size,mtime FROM usage_files WHERE path=?', (str(run),)).fetchone()
-                if prev == (info.st_size, info.st_mtime_ns):
-                    continue
-                occurrences = {}
-                with run.open(errors='replace') as source:
-                    for line in source:
-                        m = re.search(r'turn\.started\s+model="([^"]+)"', line)
-                        if not m:
-                            continue
-                        normalized = line.strip()
-                        occurrence = occurrences.get(normalized, 0)
-                        occurrences[normalized] = occurrence+1
-                        key = hashlib.sha256((run.parent.name+'\0'+normalized+'\0'+str(occurrence)).encode()).hexdigest()
-                        stamp = re.search(r'(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})', normalized)
-                        stamp = stamp.group(1) if stamp else dt.datetime.fromtimestamp(info.st_mtime).isoformat(timespec='seconds')
-                        con.execute('INSERT OR IGNORE INTO usage_events VALUES(?,?,?,?,?)', (key, stamp[:10], m.group(1), run.parent.name, stamp))
-                con.execute('INSERT OR REPLACE INTO usage_files VALUES(?,?,?)', (str(run), info.st_size, info.st_mtime_ns))
-            except OSError:
-                continue
-        con.commit()
-        per_model = con.execute('SELECT model,COUNT(*) FROM usage_events GROUP BY model ORDER BY COUNT(*) DESC').fetchall()
-        per_day = con.execute("SELECT day,COUNT(*) FROM usage_events WHERE day >= date('now','-29 days') GROUP BY day ORDER BY day").fetchall()
-        recent = [{'day': ts, 'run': run, 'models': [model]} for ts, run, model in con.execute('SELECT timestamp,run,model FROM usage_events ORDER BY timestamp DESC LIMIT 12')]
-        con.close()
-        return {'perModel': per_model, 'perDay': per_day, 'recent': recent,
-                'note': '仅统计已扫描日志中的回合，不等同于 token 或账单；旧版聚合保留但不与新事件统计相加。'}
+        return usage_store.usage_data(DB, RUNS)
 
 
 def egress_data():
@@ -946,13 +922,12 @@ def deletion_sessions(waker):
 
 
 def deletion_preference(waker):
-    result = cli('models', 'preference', 'get', '--waker-id', safe_id(waker), timeout=15)
-    if result.returncode != 0:
+    value = object_data(daemon_json('GET', '/api/model-preferences/' + safe_id(waker), timeout=8))
+    if not isinstance(value, dict) or not {'noProject', 'byProject'}.intersection(value):
         raise ValueError('model_preference_unavailable')
-    value = json.loads(result.stdout)
-    if not isinstance(value, dict):
+    if 'byProject' in value and not isinstance(value['byProject'], dict):
         raise ValueError('model_preference_unavailable')
-    return value.get('data', value)
+    return value
 
 
 class DeletionSources:
@@ -1366,46 +1341,94 @@ def write_channel(cid, body):
     return cid
 
 
+UPLINK_SWITCHES = {
+    'sessionProjectionUplink': 'QODERWAKE_SESSION_PROJECTION_UPLINK',
+    'remoteExecutionUplink': 'QODERWAKE_REMOTE_EXECUTION_UPLINK'
+}
+
+
 def runtime_policy():
     path = ROOT / 'runtime-policy.json'
     default = {'hotDeploy': False, 'embeddingDisabled': True}
-    if not path.exists():
+    if not path.exists() and not path.is_symlink():
         return default
-    value = json.loads(path.read_text())
-    if not isinstance(value, dict) or not isinstance(value.get('hotDeploy'), bool) or not isinstance(value.get('embeddingDisabled'), bool):
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, 'O_NOFOLLOW', 0))
+        with os.fdopen(fd, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 4096:
+                raise ValueError('invalid_runtime_policy')
+            raw = stream.read(4097)
+        if len(raw) > 4096:
+            raise ValueError('invalid_runtime_policy')
+        value = json.loads(raw)
+    except (OSError, ValueError):
         raise ValueError('invalid_runtime_policy')
-    return {k: value[k] for k in default}
+    if (not isinstance(value, dict) or set(value) - (set(default) | set(UPLINK_SWITCHES)) or
+            any(not isinstance(value.get(key), bool) for key in default) or
+            any(key in value and value[key] is not None and not isinstance(value[key], bool)
+                for key in UPLINK_SWITCHES)):
+        raise ValueError('invalid_runtime_policy')
+    return value
+
+
+def switch_value(value):
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        value = value.decode('ascii', errors='replace')
+    normalized = value.strip().lower()
+    if normalized in ('0', 'false', 'off'):
+        return False
+    if normalized in ('1', 'true', 'on'):
+        return True
+    raise ValueError('invalid_runtime_switch')
 
 
 def runtime_env():
     policy = runtime_policy()
     env = dict(os.environ)
-    if isinstance(policy.get('hotDeploy'), bool):
-        env['QODERWAKE_HOT_DEPLOY'] = '1' if policy['hotDeploy'] else '0'
-    if isinstance(policy.get('embeddingDisabled'), bool):
-        env['QODER_MEMORY_DISABLE_EMBEDDING'] = '1' if policy['embeddingDisabled'] else '0'
+    env['QODERWAKE_HOT_DEPLOY'] = '1' if policy['hotDeploy'] else '0'
+    env['QODER_MEMORY_DISABLE_EMBEDDING'] = '1' if policy['embeddingDisabled'] else '0'
+    for key, variable in UPLINK_SWITCHES.items():
+        if policy.get(key) is not None:
+            env[variable] = '1' if policy[key] else '0'
     return env
 
 
 def runtime_state():
     policy = runtime_policy()
-    observed = []
+    effective = dict(policy)
+    environment = runtime_env()
+    for key, variable in UPLINK_SWITCHES.items():
+        effective[key] = switch_value(environment.get(variable))
+    observed, uplinks = [], {}
     state = daemon_process_state()
     if state:
         proc = Path('/proc') / str(state['pid']) / 'environ'
         try:
             env = dict(v.split(b'=', 1) for v in proc.read_bytes().split(b'\0') if b'=' in v)
+            row = {
+                'hotDeploy': switch_value(env.get(b'QODERWAKE_HOT_DEPLOY')),
+                'embeddingDisabled': switch_value(env.get(b'QODER_MEMORY_DISABLE_EMBEDDING'))
+            }
+            uplinks = {key: switch_value(env.get(variable.encode())) for key, variable in UPLINK_SWITCHES.items()}
             if daemon_process_state() == state:
-                observed.append({
-                    'hotDeploy': env.get(b'QODERWAKE_HOT_DEPLOY', b'').strip().lower() not in (b'0', b'false'),
-                    'embeddingDisabled': env.get(b'QODER_MEMORY_DISABLE_EMBEDDING') == b'1'
-                })
+                observed.append(row)
+            else:
+                uplinks = {}
         except (OSError, ValueError):
-            pass
-    return {'desired': policy, 'observed': observed,
-            'effectiveOnPanelRestart': dict(policy),
-            'pendingRestart': not observed or any(row != policy for row in observed),
-            'note': '默认关闭自动热部署和官方 memory Embedding。保存后由面板发起的下一次 daemon 重启生效；不阻止 root、手动升级或其他启动器。'}
+            uplinks = {}
+    known = bool(observed) and all(value is not None for value in observed[0].values())
+    pending = any(observed[0][key] != policy[key] for key in ('hotDeploy', 'embeddingDisabled')) if known else None
+    if known:
+        pending = pending or any(effective[key] is not None and uplinks.get(key) != effective[key] for key in UPLINK_SWITCHES)
+    return {'desired': policy, 'observed': observed, 'observedUplink': uplinks,
+            'effectiveOnPanelRestart': effective, 'pendingRestart': pending,
+            'observation': 'verified' if known else 'unknown',
+            'restartAllowed': bool(state and observed),
+            'restartBlocker': None if state and observed else 'daemon_identity_unverified',
+            'note': '未知不等于待重启。未受管或身份不完整时禁止自动重启，请先完成独立迁管。上行开关仅控制对应官方功能，关闭可能影响会话同步和远程执行反馈，不代表零上行；继承保留启动环境，未配置时使用官方默认。已关闭的上行项重新启用需独立停止再启动。'}
 
 
 def plugins_state():
@@ -1493,14 +1516,24 @@ def net_state():
     active = gateway_active()
     alive = bool(active.get('healthy'))
     up, gets, total, up_bytes = {}, {}, 0, 0
-    if GWLOG.exists():
-        try:
-            with GWLOG.open(errors='replace') as stream:
-                lines = list(deque(stream, maxlen=5000))
-            for line in lines:
-                try:
-                    r = json.loads(line)
-                except Exception:
+    window = {'bytesRead': 0, 'fileBytes': 0, 'sources': 0, 'truncated': False,
+              'maxBytes': 1024 * 1024, 'maxLines': 5000, 'available': True}
+    try:
+        managed_log = GWLOG.parent / 'gateway' / GWLOG.name
+        if managed_log.exists() or managed_log.is_symlink():
+            paths = [managed_log] + [managed_log.with_name(managed_log.name + '.' + str(i)) for i in range(1, 4)]
+        else:
+            paths = [GWLOG]
+        result = tail_records(paths)
+        lines = result.pop('lines')
+        window.update(result)
+        for line in lines:
+            try:
+                r = json.loads(line)
+                if (not isinstance(r, dict) or not isinstance(r.get('path'), str) or
+                        not isinstance(r.get('method'), str) or
+                        type(r.get('q', 0)) is not int or r.get('q', 0) < 0 or
+                        type(r.get('status')) is not int):
                     continue
                 total += 1
                 p5 = '/'.join(r['path'].split('/')[:5])
@@ -1510,10 +1543,12 @@ def net_state():
                     a = up.setdefault(p5, [0, 0, 0])
                     a[0] += 1
                     a[1] += r.get('q', 0)
-                    a[2] = r.get('status')
+                    a[2] = r['status']
                     up_bytes += r.get('q', 0)
-        except OSError:
-            pass
+            except (ValueError, TypeError):
+                continue
+    except (OSError, ValueError):
+        window['available'] = False
     residual = {}
     daemon_state = daemon_process_state()
     pid = str(daemon_state['pid']) if daemon_state else None
@@ -1531,7 +1566,7 @@ def net_state():
                                   active.get('configHash') == policy_hash(cfg))
     return {'gw_alive': alive, 'gw_port': GW_PORT, 'cfg': cfg, 'active': active,
             'fw': fw_state(),
-            'total': total, 'up_bytes': up_bytes,
+            'total': total, 'up_bytes': up_bytes, 'logWindow': window,
             'uplink': [{'path': k, 'n': v[0], 'bytes': v[1], 'last_status': v[2]}
                        for k, v in sorted(up.items(), key=lambda x: -x[1][1])],
             'poll': sorted(gets.items(), key=lambda x: -x[1])[:8],
@@ -1669,6 +1704,7 @@ def panel_state(role):
         d['providers'], d['providerRevision'] = provider_store().summaries()
         d['legacyProviderBackups'] = provider_store().legacy_backups()
         d['pluginWritesEnabled'] = PLUGIN_WRITES_ENABLED
+        d['daemonManaged'] = daemon_process_state() is not None
     else:
         d['providers'], d['providerRevision'], d['legacyProviderBackups'] = [], None, None
         d['pluginWritesEnabled'] = False
@@ -2025,7 +2061,14 @@ class H(BaseHTTPRequestHandler):
             elif p == '/api/runtime/policy':
                 if not isinstance(b.get('hotDeploy'), bool) or not isinstance(b.get('embeddingDisabled'), bool):
                     raise ValueError('invalid_runtime_policy')
-                atomic_json(ROOT / 'runtime-policy.json', {k:b[k] for k in ('hotDeploy', 'embeddingDisabled')})
+                policy = runtime_policy()
+                policy.update({k: b[k] for k in ('hotDeploy', 'embeddingDisabled')})
+                for key in UPLINK_SWITCHES:
+                    if key in b:
+                        if b[key] is not None and not isinstance(b[key], bool):
+                            raise ValueError('invalid_runtime_policy')
+                        policy[key] = b[key]
+                atomic_json(ROOT / 'runtime-policy.json', policy)
                 result = {'ok': True, 'message': '已保存；daemon 未重启，当前运行状态不变'}
             elif p == '/api/runtime/apply':
                 ok, msg = maintenance_transaction(

@@ -35,7 +35,7 @@ class StartScriptTests(unittest.TestCase):
         control = (ROOT / 'ops/qw-ctl.sh').read_text()
         self.assertIn('process-control.py', restart)
         self.assertIn('process-control.py', control)
-        self.assertIn('--expected-version 0.12.1', restart)
+        self.assertIn('--expected-version 0.12.2', restart)
         for path in SCRIPTS[2:]:
             self.assertIn('qw-ctl.sh', path.read_text())
 

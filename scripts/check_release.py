@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REQUIRED = ['README.md','LICENSE','.gitignore','panel/qoderwake-panel.py','panel/panel_security.py',
             'panel/static/index.html','panel/static/panel.js','panel/static/management.js','panel/static/advanced.js','panel/static/panel.css',
             'panel/panel_patches.py','panel/provider_config.py','panel/provider_transport.py','panel/daemon_transport.py','panel/deletion_preflight.py','panel/gateway_runtime.py','panel/config/patch-registry.json',
-            'panel/gateway_policy.py','ops/gateway-manager.py','ops/process-control.py','ops/uplink-gw.py','ops/uplink-gw-launch.sh',
+            'panel/gateway_policy.py','panel/log_io.py','panel/usage_store.py','ops/gateway-manager.py','ops/process-control.py','ops/uplink-gw.py','ops/uplink-gw-launch.sh',
             'ops/gateway-policy.py','docs/acceptance.md','docs/development-012.md']
 FORBIDDEN = {'admin-token.txt','viewer-token.txt','access.db','usage.db','panel.env','whitelist.json',
              'uplink-gw.json','cp-ips.txt','settings.json','provider-settings.previous.json',
