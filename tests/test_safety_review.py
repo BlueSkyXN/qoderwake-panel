@@ -325,7 +325,8 @@ class RuntimeIdentityTests(unittest.TestCase):
             self.assertEqual(app.runtime_state()['observed'], [])
         with patch.object(Path, 'read_bytes', read_bytes):
             value = app.runtime_state()
-        self.assertEqual(value['observed'], [{'hotDeploy': False, 'embeddingDisabled': True}])
+        self.assertEqual(value['observed'],
+                         [{'hotDeploy': False, 'embeddingDisabled': True, 'sdkByok': None}])
         self.assertFalse(value['pendingRestart'])
 
 
@@ -401,7 +402,7 @@ class TLSHealthTests(unittest.TestCase):
         controller = pc.Controller(
             data, 'panel', 'panel', sys.executable, home, port, 'panel', data / 'panel.log',
             'https://127.0.0.1:%d/api/health' % port,
-            script=source / 'panel/qoderwake-panel.py', expected_version='0.12.2',
+            script=source / 'panel/qoderwake-panel.py', expected_version=app.VERSION,
             health_ca_file=str(self.cert), health_server_name='panel.example.test')
         environment = {'QW_BIND': '127.0.0.1', 'QW_TLS_CERT': str(self.cert),
                        'QW_TLS_KEY': str(self.key), 'QW_DAEMON_URL': 'http://127.0.0.1:1'}

@@ -10,6 +10,7 @@ export QW_PORT="${QW_PORT:-19831}"
 export QW_HOME="${QW_HOME:-$QW_ROOT/test-home}"
 export QODERWAKE_HOT_DEPLOY="${QODERWAKE_HOT_DEPLOY:-0}"
 export QODER_MEMORY_DISABLE_EMBEDDING="${QODER_MEMORY_DISABLE_EMBEDDING:-1}"
+export QODER_SDK_CUSTOM_BASE_URL_BYOK="${QODER_SDK_CUSTOM_BASE_URL_BYOK:-1}"
 CONTROL="$HERE/../ops/process-control.py"
 [ -f "$CONTROL" ] || CONTROL="$HERE/process-control.py"
 [ -f "$CONTROL" ] || { echo '{"ok":false,"error":"process_controller_missing"}'; exit 1; }
@@ -33,4 +34,4 @@ exec "$PYTHON" "$CONTROL" start \
   --mode panel \
   --log "$QW_ROOT/logs/qw-panel.log" \
   "${HEALTH_ARGS[@]}" \
-  --expected-version 0.12.2
+  --expected-version 0.12.3

@@ -374,3 +374,94 @@ class CompletionPanelTests(unittest.TestCase):
         os.mkfifo(self.root / 'runtime-policy.json')
         with self.assertRaises(ValueError):
             app.runtime_policy()
+
+    def test_runtime_sdkbyok_policy_env_and_default_inherit(self):
+        body = {'hotDeploy': False, 'embeddingDisabled': True, 'sdkByok': False, 'confirm': '/api/runtime/policy'}
+        self.assertEqual(self.request('POST', '/api/runtime/policy', body, token=self.sec.admin)[0], 200)
+        self.assertIs(app.runtime_policy()['sdkByok'], False)
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(app.runtime_env()[app.SDK_BYOK_SWITCH], '0')
+        (self.root / 'runtime-policy.json').unlink()
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(app.runtime_env()[app.SDK_BYOK_SWITCH], '1')
+        self.assertIs(app.runtime_state()['effectiveOnPanelRestart']['sdkByok'], True)
+        body['sdkByok'] = 'false'
+        self.assertEqual(self.request('POST', '/api/runtime/policy', body, token=self.sec.admin)[0], 400)
+        self.assertFalse((self.root / 'runtime-policy.json').exists())
+
+    def test_runtime_sdkbyok_observed_and_pending_flag(self):
+        state = {'pid': os.getpid(), 'mode': 'direct', 'port': 19830}
+        with patch.object(app, 'daemon_process_state', return_value=state), \
+                patch.object(app, 'read_daemon_environ', return_value={}):
+            value = app.runtime_state()
+        self.assertEqual(len(value['observed']), 1)
+        self.assertIsNone(value['observed'][0]['sdkByok'])
+        self.assertIs(value['sdkByokPending'], True)
+        with patch.object(app, 'daemon_process_state', return_value=state), \
+                patch.object(app, 'read_daemon_environ',
+                             return_value={app.SDK_BYOK_SWITCH.encode(): b'1'}):
+            value = app.runtime_state()
+        self.assertIs(value['observed'][0]['sdkByok'], True)
+        self.assertIs(value['sdkByokPending'], False)
+
+    def test_telemetry_route_writes_via_cli_and_validates(self):
+        calls = []
+
+        class Ok:
+            returncode = 0
+            stdout = ''
+            stderr = ''
+
+        class Fail:
+            returncode = 1
+            stdout = ''
+            stderr = 'boom'
+
+        def fake_cli(*args, timeout=30):
+            calls.append(args)
+            return Ok()
+
+        with patch.object(app, 'cli', side_effect=fake_cli):
+            status, _, body = self.request('POST', '/api/telemetry',
+                                           {'enabled': False, 'confirm': '/api/telemetry'},
+                                           token=self.sec.admin)
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)['ok'])
+        self.assertEqual(calls[0], ('config', 'set', 'telemetry', 'false'))
+        with patch.object(app, 'cli', return_value=Fail()):
+            status, _, body = self.request('POST', '/api/telemetry',
+                                           {'enabled': True, 'confirm': '/api/telemetry'},
+                                           token=self.sec.admin)
+        result = json.loads(body)
+        self.assertEqual(status, 502)
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['message'], 'boom')
+        self.assertEqual(self.request('POST', '/api/telemetry',
+                                      {'enabled': 'false', 'confirm': '/api/telemetry'},
+                                      token=self.sec.admin)[0], 400)
+        self.assertEqual(self.request('POST', '/api/telemetry',
+                                      {'enabled': False},
+                                      token=self.sec.admin)[0], 409)
+
+    def test_telemetry_display_reads_daemon_config_json(self):
+        config = self.root / 'home' / 'config'
+        config.mkdir(parents=True)
+        (config / 'config.json').write_text('{"telemetry": false, "update": {}}')
+        with patch.object(app, 'cached_state', return_value={}):
+            value = app.panel_state('admin')
+        self.assertIs(value['telemetry'], False)
+        (config / 'config.json').write_text('{"telemetry": "maybe"}')
+        with patch.object(app, 'cached_state', return_value={}):
+            value = app.panel_state('admin')
+        self.assertIsNone(value['telemetry'])
+
+    def test_provider_probe_403_names_byok_causes(self):
+        import urllib.error
+        import provider_transport
+        err = urllib.error.HTTPError('https://api.example.com/v1', 403, 'Forbidden', None, None)
+        with patch.object(provider_transport, 'probe', side_effect=err):
+            ok, msg = app.test_provider('https://api.example.com/v1', 'key')
+        self.assertFalse(ok)
+        self.assertIn('403', msg)
+        self.assertIn('BYOK', msg)
+        self.assertIn('同名冲突', msg)

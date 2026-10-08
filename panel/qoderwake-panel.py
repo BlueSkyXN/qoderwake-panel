@@ -56,7 +56,7 @@ DAEMON_BIN = os.environ.get('QW_DAEMON_BIN') or 'qoderwake-cn'
 DAEMON = os.environ.get('QW_DAEMON_URL') or 'http://127.0.0.1:19830'
 PORT = int(os.environ.get('QW_PORT') or 19831)
 BIND = os.environ.get('QW_BIND') or '127.0.0.1'
-VERSION = '0.12.2'
+VERSION = '0.12.3'
 ASSETS = Path(__file__).resolve().parent / 'static'
 SECURITY = None
 PATCHES = None
@@ -492,6 +492,10 @@ def test_provider(base_url, api_key):
         from provider_transport import probe
         return probe(valid_provider_url(base_url), api_key)
     except urllib.error.HTTPError as e:
+        if e.code == 403:
+            return False, ('HTTP 403：官方拒绝自定义通道。排查：①控制页 BYOK 开关（自定义 Provider 通道）'
+                           '是否开启、是否已重启生效；②Provider 键是否与模型目录条目同名冲突（CLI 有 catalog '
+                           '磁盘缓存，改后需清理）；③settings 是否残留 endpoint/vpc 字段')
         return False, 'HTTP %d（key 或端点问题）' % e.code
     except Exception:
         return False, '端点检查失败，请核对地址、凭据与网络；未转发到重定向目的地'
@@ -1346,6 +1350,9 @@ UPLINK_SWITCHES = {
     'remoteExecutionUplink': 'QODERWAKE_REMOTE_EXECUTION_UPLINK'
 }
 
+SDK_BYOK_SWITCH = 'QODER_SDK_CUSTOM_BASE_URL_BYOK'
+SDK_BYOK_DEFAULT = True
+
 
 def runtime_policy():
     path = ROOT / 'runtime-policy.json'
@@ -1364,10 +1371,11 @@ def runtime_policy():
         value = json.loads(raw)
     except (OSError, ValueError):
         raise ValueError('invalid_runtime_policy')
-    if (not isinstance(value, dict) or set(value) - (set(default) | set(UPLINK_SWITCHES)) or
+    if (not isinstance(value, dict) or set(value) - (set(default) | set(UPLINK_SWITCHES) | {'sdkByok'}) or
             any(not isinstance(value.get(key), bool) for key in default) or
             any(key in value and value[key] is not None and not isinstance(value[key], bool)
-                for key in UPLINK_SWITCHES)):
+                for key in UPLINK_SWITCHES) or
+            ('sdkByok' in value and not isinstance(value['sdkByok'], bool))):
         raise ValueError('invalid_runtime_policy')
     return value
 
@@ -1390,27 +1398,34 @@ def runtime_env():
     env = dict(os.environ)
     env['QODERWAKE_HOT_DEPLOY'] = '1' if policy['hotDeploy'] else '0'
     env['QODER_MEMORY_DISABLE_EMBEDDING'] = '1' if policy['embeddingDisabled'] else '0'
+    env[SDK_BYOK_SWITCH] = '1' if policy.get('sdkByok', SDK_BYOK_DEFAULT) else '0'
     for key, variable in UPLINK_SWITCHES.items():
         if policy.get(key) is not None:
             env[variable] = '1' if policy[key] else '0'
     return env
 
 
+def read_daemon_environ(pid):
+    proc = Path('/proc') / str(pid) / 'environ'
+    return dict(v.split(b'=', 1) for v in proc.read_bytes().split(b'\0') if b'=' in v)
+
+
 def runtime_state():
     policy = runtime_policy()
     effective = dict(policy)
+    effective['sdkByok'] = policy.get('sdkByok', SDK_BYOK_DEFAULT)
     environment = runtime_env()
     for key, variable in UPLINK_SWITCHES.items():
         effective[key] = switch_value(environment.get(variable))
     observed, uplinks = [], {}
     state = daemon_process_state()
     if state:
-        proc = Path('/proc') / str(state['pid']) / 'environ'
         try:
-            env = dict(v.split(b'=', 1) for v in proc.read_bytes().split(b'\0') if b'=' in v)
+            env = read_daemon_environ(state['pid'])
             row = {
                 'hotDeploy': switch_value(env.get(b'QODERWAKE_HOT_DEPLOY')),
-                'embeddingDisabled': switch_value(env.get(b'QODER_MEMORY_DISABLE_EMBEDDING'))
+                'embeddingDisabled': switch_value(env.get(b'QODER_MEMORY_DISABLE_EMBEDDING')),
+                'sdkByok': switch_value(env.get(SDK_BYOK_SWITCH.encode()))
             }
             uplinks = {key: switch_value(env.get(variable.encode())) for key, variable in UPLINK_SWITCHES.items()}
             if daemon_process_state() == state:
@@ -1419,16 +1434,17 @@ def runtime_state():
                 uplinks = {}
         except (OSError, ValueError):
             uplinks = {}
-    known = bool(observed) and all(value is not None for value in observed[0].values())
+    known = bool(observed) and all(observed[0][key] is not None for key in ('hotDeploy', 'embeddingDisabled'))
     pending = any(observed[0][key] != policy[key] for key in ('hotDeploy', 'embeddingDisabled')) if known else None
     if known:
         pending = pending or any(effective[key] is not None and uplinks.get(key) != effective[key] for key in UPLINK_SWITCHES)
+    sdk_pending = bool(observed) and (observed[0]['sdkByok'] is True) != effective['sdkByok']
     return {'desired': policy, 'observed': observed, 'observedUplink': uplinks,
-            'effectiveOnPanelRestart': effective, 'pendingRestart': pending,
+            'effectiveOnPanelRestart': effective, 'pendingRestart': pending, 'sdkByokPending': sdk_pending,
             'observation': 'verified' if known else 'unknown',
             'restartAllowed': bool(state and observed),
             'restartBlocker': None if state and observed else 'daemon_identity_unverified',
-            'note': '未知不等于待重启。未受管或身份不完整时禁止自动重启，请先完成独立迁管。上行开关仅控制对应官方功能，关闭可能影响会话同步和远程执行反馈，不代表零上行；继承保留启动环境，未配置时使用官方默认。已关闭的上行项重新启用需独立停止再启动。'}
+            'note': '未知不等于待重启。未受管或身份不完整时禁止自动重启，请先完成独立迁管。上行开关仅控制对应官方功能，关闭可能影响会话同步和远程执行反馈，不代表零上行；继承保留启动环境，未配置时使用官方默认。已关闭的上行项重新启用需独立停止再启动。BYOK 通道关闭后所有自有 Provider 不可用；进程未携带开关时按官方默认（关闭）判定。'}
 
 
 def plugins_state():
@@ -1710,7 +1726,7 @@ def panel_state(role):
         d['pluginWritesEnabled'] = False
         d['whoami'] = None
     try:
-        cfg = json.loads((HOME / 'config/settings.json').read_text())
+        cfg = json.loads((HOME / 'config/config.json').read_text())
         d['telemetry'] = cfg.get('telemetry') if isinstance(cfg.get('telemetry'), bool) else None
     except (OSError, ValueError):
         d['telemetry'] = None
@@ -1753,7 +1769,7 @@ RESOURCE_ROUTES = DEPENDENCY_WRITE_ROUTES | {
     '/api/deletion/reconcile', '/api/deletion/release'
 }
 VIEWER_ROUTES = {'/api/state', '/api/usage', '/api/plugins'}
-CONFIRM_ROUTES = {'/api/provider/delete', '/api/test', '/api/test/saved', '/api/waker/delete', '/api/deletion/release', '/api/maintenance/enter', '/api/backup/delete', '/api/apply', '/api/net/config', '/api/net/firewall', '/api/callers/create', '/api/callers/revoke', '/api/patch/execute', '/api/plugins/install', '/api/plugins/remove', '/api/plugins/toggle', '/api/channels/action', '/api/channels/config', '/api/channels/delete', '/api/runtime/policy', '/api/runtime/apply', '/api/session/delete', '/api/skill/update', '/api/skill/rollback', '/api/automation/toggle', '/api/automation/run', '/api/automation/delete', '/api/pairing/approve'}
+CONFIRM_ROUTES = {'/api/provider/delete', '/api/test', '/api/test/saved', '/api/waker/delete', '/api/deletion/release', '/api/maintenance/enter', '/api/backup/delete', '/api/apply', '/api/telemetry', '/api/net/config', '/api/net/firewall', '/api/callers/create', '/api/callers/revoke', '/api/patch/execute', '/api/plugins/install', '/api/plugins/remove', '/api/plugins/toggle', '/api/channels/action', '/api/channels/config', '/api/channels/delete', '/api/runtime/policy', '/api/runtime/apply', '/api/session/delete', '/api/skill/update', '/api/skill/rollback', '/api/automation/toggle', '/api/automation/run', '/api/automation/delete', '/api/pairing/approve'}
 SPEND_ROUTES = {'/api/gw', '/api/chat/send', '/api/chat/new', '/api/automation/run'}
 MAINTENANCE_CONTROL_ROUTES = {'/api/maintenance/enter', '/api/maintenance/exit'}
 POST_ROUTES = CONFIRM_ROUTES | SPEND_ROUTES | MAINTENANCE_CONTROL_ROUTES | {'/api/session/read', '/api/patch/plan', '/api/provider', '/api/provider/probe-plan', '/api/deletion/preview', '/api/deletion/status', '/api/deletion/reconcile', '/api/deletion/release', '/api/preference', '/api/backup', '/api/waker', '/api/waker/update'}
@@ -2068,6 +2084,10 @@ class H(BaseHTTPRequestHandler):
                         if b[key] is not None and not isinstance(b[key], bool):
                             raise ValueError('invalid_runtime_policy')
                         policy[key] = b[key]
+                if 'sdkByok' in b:
+                    if not isinstance(b['sdkByok'], bool):
+                        raise ValueError('invalid_runtime_policy')
+                    policy['sdkByok'] = b['sdkByok']
                 atomic_json(ROOT / 'runtime-policy.json', policy)
                 result = {'ok': True, 'message': '已保存；daemon 未重启，当前运行状态不变'}
             elif p == '/api/runtime/apply':
@@ -2145,6 +2165,16 @@ class H(BaseHTTPRequestHandler):
                     self.identity['principal'], '应用 Provider 配置',
                     restart_daemon, lease)
                 result = {'ok': ok, 'message': msg}
+            elif p == '/api/telemetry':
+                enabled = b.get('enabled')
+                if not isinstance(enabled, bool):
+                    raise ValueError('invalid_telemetry_request')
+                r = cli('config', 'set', 'telemetry', 'true' if enabled else 'false', timeout=25)
+                if r.returncode:
+                    result = {'ok': False, 'message': (r.stdout + r.stderr).strip()[-160:] or 'daemon 配置写入失败'}
+                else:
+                    result = {'ok': True, 'telemetry': enabled,
+                              'message': '已写入 daemon 配置：telemetry=' + ('true' if enabled else 'false')}
             elif p == '/api/backup':
                 result = {'ok': True, 'name': do_backup()}
             elif p == '/api/backup/delete':

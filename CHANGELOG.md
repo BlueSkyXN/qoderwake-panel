@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.12.3 — 2026-10-08
+
+- 官方运行开关新增“自定义 Provider 通道（BYOK，QODER_SDK_CUSTOM_BASE_URL_BYOK）”：策略持久化（旧策略文件兼容，缺省视为开启）、下次启动生效值、受管 daemon 进程实况观测与一致性提示；进程未携带开关时按官方默认（关闭）判定，不参与既有 pendingRestart 聚合。
+- 新增 /api/telemetry（确认门路由）：经 daemon CLI `config set telemetry` 写入官方配置，失败回报输出摘要；安全页提供开关按钮。
+- 修复：遥测显示此前误读 `config/settings.json`（该文件无此键，永远显示未确认），改为读 daemon 实际写入的 `config/config.json`。
+- Provider 连通性测试遇 HTTP 403 时给出定向排查提示（BYOK 开关未开/重启未生效、Provider 键与目录同名冲突含 catalog 磁盘缓存、endpoint/vpc 残留）。
+- 安全页新增出网白名单静态清单卡片（config/whitelist.json）。
+- 环境变量读取提取为 `read_daemon_environ`，便于测试替换。
+
+统一验收：macOS 245 通过 / 2 Linux-only 跳过；Linux 247/247。升级前先修复两处受管启动阻断（PANEL_ENV 白名单、restart-panel 期望版本），并以测试锚定防止再次漂移。生产 Panel 受管升级（备份后 3 秒完成切换，health 0.12.3）；daemon 完成首次受管迁管（旧进程身份存档→优雅停止→端口释放→受管启动，BYOK 开关进入 daemon 环境）；端到端实测：面板会话消息经自有 Provider 实调并返回回复。备份与迁管记录在部署机私有目录。
+
 ## 0.12.2 — 2026-10-06
 
 - 区分运行态未知、已核实一致和待应用；未受管 daemon 不开放自动重启，网关未核实不误报停止。

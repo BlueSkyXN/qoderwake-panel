@@ -1,6 +1,8 @@
 from pathlib import Path
+import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -35,7 +37,17 @@ class StartScriptTests(unittest.TestCase):
         control = (ROOT / 'ops/qw-ctl.sh').read_text()
         self.assertIn('process-control.py', restart)
         self.assertIn('process-control.py', control)
-        self.assertIn('--expected-version 0.12.2', restart)
+        panel_spec = importlib.util.spec_from_file_location(
+            'panel_version_probe', ROOT / 'panel/qoderwake-panel.py')
+        panel_source = (ROOT / 'panel/qoderwake-panel.py').read_text()
+        version = re.search(r"VERSION = '([^']+)'", panel_source).group(1)
+        self.assertIn('--expected-version ' + version, restart)
+        self.assertIn('QODER_SDK_CUSTOM_BASE_URL_BYOK', restart)
+        panel_ctl_spec = importlib.util.spec_from_file_location(
+            'panel_env_probe', ROOT / 'ops/process-control.py')
+        panel_ctl = importlib.util.module_from_spec(panel_ctl_spec)
+        panel_ctl_spec.loader.exec_module(panel_ctl)
+        self.assertIn('QODER_SDK_CUSTOM_BASE_URL_BYOK', panel_ctl.PANEL_ENV)
         for path in SCRIPTS[2:]:
             self.assertIn('qw-ctl.sh', path.read_text())
 
