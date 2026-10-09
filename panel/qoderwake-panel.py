@@ -56,7 +56,7 @@ DAEMON_BIN = os.environ.get('QW_DAEMON_BIN') or 'qoderwake-cn'
 DAEMON = os.environ.get('QW_DAEMON_URL') or 'http://127.0.0.1:19830'
 PORT = int(os.environ.get('QW_PORT') or 19831)
 BIND = os.environ.get('QW_BIND') or '127.0.0.1'
-VERSION = '0.12.3'
+VERSION = '0.12.4'
 ASSETS = Path(__file__).resolve().parent / 'static'
 SECURITY = None
 PATCHES = None
@@ -1697,12 +1697,12 @@ def invalidate_state():
 
 def cached_state():
     with STATE_LOCK:
-        if STATE_CACHE['data'] is not None and time.monotonic() - STATE_CACHE['at'] <= 15:
+        if STATE_CACHE['data'] is not None and time.monotonic() - STATE_CACHE['at'] <= 60:
             return dict(STATE_CACHE['data'])
     with STATE_REFRESH_LOCK:
         for _ in range(2):
             with STATE_LOCK:
-                if STATE_CACHE['data'] is not None and time.monotonic() - STATE_CACHE['at'] <= 15:
+                if STATE_CACHE['data'] is not None and time.monotonic() - STATE_CACHE['at'] <= 60:
                     return dict(STATE_CACHE['data'])
                 epoch = STATE_CACHE['epoch']
             data = api_state()
@@ -1756,6 +1756,64 @@ def patch_state():
     return patches().status()
 
 
+FILE_CHECKS = {}
+FILE_CHECK_LOCK = threading.Lock()
+
+
+def file_check_status():
+    with FILE_CHECK_LOCK:
+        return dict(FILE_CHECKS) or {'status': 'idle'}
+
+
+def start_file_check():
+    with FILE_CHECK_LOCK:
+        if FILE_CHECKS.get('status') == 'running':
+            return dict(FILE_CHECKS)
+        FILE_CHECKS.clear()
+        FILE_CHECKS.update(status='running', startedAt=time.time())
+    threading.Thread(target=_run_file_check, daemon=True).start()
+    return file_check_status()
+
+
+def _run_file_check():
+    import hashlib
+    result = {'status': 'done', 'checkedAt': time.time(), 'files': []}
+    try:
+        control = process_control()
+        for name in ('panel', 'daemon-cn'):
+            state = control.read_state(ROOT / 'process-state' / (name + '.json'))
+            if not state:
+                result['files'].append({'name': name, 'status': 'unmanaged'})
+                continue
+            for kind in ('launch', 'script'):
+                item = state.get(kind)
+                if not item:
+                    continue
+                path = Path(item['path'])
+                entry = {'name': name, 'kind': kind, 'path': str(path)}
+                try:
+                    info = path.stat()
+                    same_file = (info.st_dev, info.st_ino) == (item['device'], item['inode'])
+                    digest = hashlib.sha256()
+                    with path.open('rb') as stream:
+                        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                            digest.update(chunk)
+                    digest_value = digest.hexdigest()
+                    recorded = item.get('sha256')
+                    recorded_known = isinstance(recorded, str) and recorded not in ('', '0' * 64)
+                    entry.update(present=True, sameFile=same_file, sha256=digest_value,
+                                 recorded=recorded_known,
+                                 matchesRecorded=(digest_value == recorded) if recorded_known else None)
+                except OSError:
+                    entry.update(present=False, sameFile=False, sha256=None)
+                result['files'].append(entry)
+    except Exception:
+        result = {'status': 'failed', 'checkedAt': time.time()}
+    with FILE_CHECK_LOCK:
+        FILE_CHECKS.clear()
+        FILE_CHECKS.update(result)
+
+
 DEPENDENCY_WRITE_ROUTES = {
     '/api/callers/create', '/api/preference', '/api/provider',
     '/api/waker', '/api/waker/update', '/api/chat/new', '/api/chat/send', '/api/gw',
@@ -1769,7 +1827,7 @@ RESOURCE_ROUTES = DEPENDENCY_WRITE_ROUTES | {
     '/api/deletion/reconcile', '/api/deletion/release'
 }
 VIEWER_ROUTES = {'/api/state', '/api/usage', '/api/plugins'}
-CONFIRM_ROUTES = {'/api/provider/delete', '/api/test', '/api/test/saved', '/api/waker/delete', '/api/deletion/release', '/api/maintenance/enter', '/api/backup/delete', '/api/apply', '/api/telemetry', '/api/net/config', '/api/net/firewall', '/api/callers/create', '/api/callers/revoke', '/api/patch/execute', '/api/plugins/install', '/api/plugins/remove', '/api/plugins/toggle', '/api/channels/action', '/api/channels/config', '/api/channels/delete', '/api/runtime/policy', '/api/runtime/apply', '/api/session/delete', '/api/skill/update', '/api/skill/rollback', '/api/automation/toggle', '/api/automation/run', '/api/automation/delete', '/api/pairing/approve'}
+CONFIRM_ROUTES = {'/api/provider/delete', '/api/test', '/api/test/saved', '/api/waker/delete', '/api/deletion/release', '/api/maintenance/enter', '/api/backup/delete', '/api/apply', '/api/telemetry', '/api/net/config', '/api/net/firewall', '/api/callers/create', '/api/callers/revoke', '/api/patch/execute', '/api/plugins/install', '/api/plugins/remove', '/api/plugins/toggle', '/api/channels/action', '/api/channels/config', '/api/channels/delete', '/api/runtime/policy', '/api/runtime/apply', '/api/file-check', '/api/session/delete', '/api/skill/update', '/api/skill/rollback', '/api/automation/toggle', '/api/automation/run', '/api/automation/delete', '/api/pairing/approve'}
 SPEND_ROUTES = {'/api/gw', '/api/chat/send', '/api/chat/new', '/api/automation/run'}
 MAINTENANCE_CONTROL_ROUTES = {'/api/maintenance/enter', '/api/maintenance/exit'}
 POST_ROUTES = CONFIRM_ROUTES | SPEND_ROUTES | MAINTENANCE_CONTROL_ROUTES | {'/api/session/read', '/api/patch/plan', '/api/provider', '/api/provider/probe-plan', '/api/deletion/preview', '/api/deletion/status', '/api/deletion/reconcile', '/api/deletion/release', '/api/preference', '/api/backup', '/api/waker', '/api/waker/update'}
@@ -1931,6 +1989,8 @@ class H(BaseHTTPRequestHandler):
                 d = net_state()
             elif u.path == '/api/patch/state':
                 d = patch_state()
+            elif u.path == '/api/file-check':
+                d = file_check_status()
             elif u.path == '/api/maintenance':
                 d = ADMISSION.status()
             else:
@@ -2095,6 +2155,9 @@ class H(BaseHTTPRequestHandler):
                     self.identity['principal'], '应用 daemon 启动策略',
                     restart_daemon, lease)
                 result = {'ok': ok, 'message': msg or ('已按启动策略重启 daemon' if ok else '重启失败')}
+            elif p == '/api/file-check':
+                result = {'ok': True, **start_file_check(),
+                          'message': '已开始检查，完成后刷新本页查看'}
             elif p == '/api/session/read':
                 sid=opaque_id(b.get('sessionId'));payload={}
                 if b.get('lastSeq') is not None:

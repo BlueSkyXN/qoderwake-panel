@@ -75,11 +75,18 @@ def _plain_int(value, minimum=0, maximum=None):
             (maximum is None or value <= maximum))
 
 
+HASH_CACHE = {}
+
+
 def _sha256(path, limit=512 * 1024 * 1024):
     path = Path(path)
     info = path.stat()
     if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
         raise ValueError('managed_file_unavailable')
+    key = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+    cached = HASH_CACHE.get(key)
+    if cached is not None:
+        return cached
     digest = hashlib.sha256()
     with path.open('rb') as stream:
         while True:
@@ -87,10 +94,13 @@ def _sha256(path, limit=512 * 1024 * 1024):
             if not chunk:
                 break
             digest.update(chunk)
-    return digest.hexdigest()
+    value = digest.hexdigest()
+    HASH_CACHE.clear()
+    HASH_CACHE[key] = value
+    return value
 
 
-def file_identity(path, with_hash=True):
+def file_identity(path, with_hash=False):
     path = Path(path).resolve(strict=True)
     if path.is_symlink() or not path.is_file():
         raise ValueError('managed_file_unavailable')
@@ -115,11 +125,7 @@ def file_identity_matches(value):
         if path.is_symlink() or path.resolve(strict=True) != path:
             return False
         info = path.stat()
-        if (info.st_dev, info.st_ino) != (
-                value['device'], value['inode']):
-            return False
-        return (value['sha256'] == '0' * 64 or
-                _sha256(path) == value['sha256'])
+        return (info.st_dev, info.st_ino) == (value['device'], value['inode'])
     except (OSError, ValueError, KeyError):
         return False
 
