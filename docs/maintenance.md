@@ -9,7 +9,12 @@
 - 零补丁与补丁工具都可以进入公开快照；是否公开取决于验证与脱敏，不按技术路线划分公私版本。
 - 服务器部署是第三个独立环节。源码已提交、PR 已合并或 Release 已发布，都不能证明运行进程已更新或真实业务已验收。
 
-## 0.12.3 当前发布基线
+## 0.12.4 当前发布基线
+
+- [`v0.12.4`](https://github.com/BlueSkyXN/qoderwake-panel/tree/v0.12.4) 固定对应 `6a664df`；[Release](https://github.com/BlueSkyXN/qoderwake-panel/releases/tag/v0.12.4) 提供 tar.gz、zip 与 SHA256SUMS，下载后哈希核对一致，tar.gz 73 个文件。
+- 启动、重启和页面加载不再计算受管文件哈希；内容哈希只在增强管理页按需、后台执行。生产面板已切换到 0.12.4。
+
+## 0.12.3 历史基线
 
 - [`v0.12.3`](https://github.com/BlueSkyXN/qoderwake-panel/tree/v0.12.3) 固定对应 `756d4cae45a8d1b5d03ba39212303cf41a5462a7`；[Release](https://github.com/BlueSkyXN/qoderwake-panel/releases/tag/v0.12.3) 提供 tar.gz、zip 与 SHA256SUMS，下载核对哈希一致、tar.gz 72 文件。
 - 双平台套件：macOS 245 通过 / 2 Linux-only 跳过；Linux 247/247。生产 Panel 受管升级至 0.12.3；daemon 已完成首次受管迁管（BYOK 开关入 env、实况三态一致）；面板会话经自有 Provider 实调返回回复。
