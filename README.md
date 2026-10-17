@@ -1,6 +1,6 @@
 # QoderWake Panel
 
-自管 QoderWake 的增强面板与运维工具。**0.12.6** 提供按机器人类型读取的记忆页，修复记忆权限与切换错位，兼容超长历史记忆，并优化用量扫描、适配 QoderWake 1.1.12。记忆设置见 [记忆页说明](docs/memory.md)，版本变化见 [Changelog](CHANGELOG.md)。
+自管 QoderWake 的增强面板与运维工具。**0.12.7** 提供按机器人类型读取的记忆页，并补充 QoderWake 1.1.12 群聊助理使用自有 Provider 的启动兼容工具。记忆设置见 [记忆页说明](docs/memory.md)，自有模型调用失败的处理见 [Provider 运行兼容](docs/provider-runtime.md)，版本变化见 [Changelog](CHANGELOG.md)。
 
 **它不是官方控制台的完整替代，也未实现整机零上行、受保护业务免登录或完全锁版。官方 memory Embedding 默认关闭，通用 Embedding BYOK 暂不作为主线。** 功能与证据边界见 [验收记录](docs/acceptance.md)。
 
