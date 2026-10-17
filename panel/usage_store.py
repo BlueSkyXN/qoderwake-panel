@@ -29,10 +29,15 @@ def initialize(path):
             CREATE TABLE IF NOT EXISTS usage_files(path TEXT PRIMARY KEY, size INTEGER, mtime INTEGER);
             CREATE TABLE IF NOT EXISTS usage_cursors(
                 path TEXT PRIMARY KEY, device INTEGER, inode INTEGER, offset INTEGER,
-                prefix TEXT, suffix TEXT, discarding INTEGER, skipped INTEGER);
+                prefix TEXT, suffix TEXT, discarding INTEGER, skipped INTEGER,
+                size INTEGER, mtime_ns INTEGER);
             CREATE TABLE IF NOT EXISTS usage_occurrences(
                 path TEXT, line_hash TEXT, count INTEGER, PRIMARY KEY(path,line_hash));
         ''')
+        existing = [row[1] for row in con.execute('PRAGMA table_info(usage_cursors)')]
+        if 'size' not in existing:
+            con.execute('ALTER TABLE usage_cursors ADD COLUMN size INTEGER')
+            con.execute('ALTER TABLE usage_cursors ADD COLUMN mtime_ns INTEGER')
     con.close()
 
 
@@ -52,22 +57,35 @@ def scan_file(con, path, budget):
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
             raise ValueError('unsafe_usage_log')
-        previous = con.execute('SELECT device,inode,offset,prefix,suffix,discarding,skipped FROM usage_cursors WHERE path=?', (name,)).fetchone()
+        columns = [row[1] for row in con.execute('PRAGMA table_info(usage_cursors)')]
+        row = con.execute('SELECT %s FROM usage_cursors WHERE path=?' % ','.join(columns), (name,)).fetchone() if columns else None
+        previous = dict(zip(columns, row)) if row else None
         offset, discarding, skipped, checked = 0, False, 0, 0
-        if previous and previous[:2] == (info.st_dev, info.st_ino) and previous[2] <= info.st_size:
-            prefix, suffix, checked = guards(stream, previous[2])
-            if (prefix, suffix) == previous[3:5]:
-                offset, discarding, skipped = previous[2], bool(previous[5]), previous[6]
+        if previous and (previous['device'], previous['inode']) == (info.st_dev, info.st_ino) and previous['offset'] <= info.st_size:
+            unchanged = (previous['offset'] == info.st_size and
+                         previous.get('size') == info.st_size and previous.get('mtime_ns') == info.st_mtime_ns)
+            if unchanged:
+                # stat-verified fast path: nothing appended, no truncation, same
+                # file identity; the stored cursor already matches, so no write
+                offset, discarding, skipped = previous['offset'], bool(previous['discarding']), previous['skipped']
+                return {'bytesRead': 0, 'guardBytesRead': 0,
+                        'pending': offset < info.st_size,
+                        'skippedLines': skipped}
+            prefix, suffix, checked = guards(stream, previous['offset'])
+            if (prefix, suffix) == (previous['prefix'], previous['suffix']):
+                offset, discarding, skipped = previous['offset'], bool(previous['discarding']), previous['skipped']
         if not offset:
             con.execute('DELETE FROM usage_occurrences WHERE path=?', (name,))
         stream.seek(offset)
         read = 0
+        grew = False
         while read < budget:
             position = stream.tell()
             raw = stream.readline(min(MAX_LINE_BYTES + 1, budget - read))
             read += len(raw)
             if not raw:
                 break
+            grew = True
             if discarding:
                 offset = stream.tell()
                 discarding = not raw.endswith(b'\n')
@@ -97,9 +115,12 @@ def scan_file(con, path, budget):
             con.execute('INSERT OR IGNORE INTO usage_events VALUES(?,?,?,?,?)', (key, stamp[:10], match.group(1), path.parent.name, stamp))
             con.execute('INSERT OR REPLACE INTO usage_occurrences VALUES(?,?,?)', (name, line_hash, occurrence + 1))
         prefix, suffix, extra = guards(stream, offset)
-        con.execute('INSERT OR REPLACE INTO usage_cursors VALUES(?,?,?,?,?,?,?,?)', (name, info.st_dev, info.st_ino, offset, prefix, suffix, int(discarding), skipped))
+        con.execute('INSERT OR REPLACE INTO usage_cursors VALUES(?,?,?,?,?,?,?,?,?,?)',
+                    (name, info.st_dev, info.st_ino, offset, prefix, suffix, int(discarding), skipped,
+                     info.st_size, info.st_mtime_ns))
         return {'bytesRead': read, 'guardBytesRead': checked + extra,
-                'pending': offset < os.fstat(stream.fileno()).st_size, 'skippedLines': skipped}
+                'pending': offset < os.fstat(stream.fileno()).st_size or grew and read >= budget,
+                'skippedLines': skipped}
 
 
 def usage_data(database, runs):

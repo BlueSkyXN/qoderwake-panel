@@ -28,7 +28,7 @@ test('verified applied and changed runtime are distinct',()=>{
 });
 test('save then apply rejects HTTP 200 with ok false without success toast',async()=>{
   const requested=[],messages=[],routes=[];
-  const values={'hot-deploy':{checked:false},'disable-embedding':{checked:true},'session-uplink':{value:'off'},'execution-uplink':{value:'inherit'}};
+  const values={'hot-deploy':{checked:false},'disable-embedding':{checked:true},'sdk-byok':{checked:true},'session-uplink':{value:'off'},'execution-uplink':{value:'inherit'}};
   const context=runtimeContext({actions:{},E:id=>values[id],errors:{},confirmAction:async()=>true,toast:message=>messages.push(message),route:async path=>routes.push(path),api:async(path,body)=>{requested.push({path,body});return path==='runtime/policy'?{ok:true,message:'saved'}:{ok:false,message:'identity not verified'}}});
   vm.runInContext(definitions+'\n'+panel.split('\n').find(line=>line.startsWith('async function mutate('))+'\n'+management.split('\n').find(line=>line.startsWith('actions.applyRuntime=')),context);
   await assert.rejects(context.actions.applyRuntime(),/identity not verified/);

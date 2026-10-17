@@ -122,7 +122,7 @@ class PanelTests(unittest.TestCase):
             self.assertEqual(self.request('POST','/api/backup',{},headers={'Cookie':cookie,'Origin':self.origin,'X-CSRF-Token':csrf})[0],200)
 
     def test_viewer_cannot_read_private_data_or_write(self):
-        for path in ['/api/chat/messages?session=x','/api/chat/sessions?waker=x','/api/waker/detail?id=x','/api/audit','/api/net/state','/api/backups','/api/patch/state']:
+        for path in ['/api/chat/messages?session=x','/api/chat/sessions?waker=x','/api/memory?waker=x','/api/waker/detail?id=x','/api/audit','/api/net/state','/api/backups','/api/patch/state']:
             self.assertEqual(self.request('GET',path,token=self.sec.viewer)[0],403)
         self.assertEqual(self.request('POST','/api/backup',{},token=self.sec.viewer)[0],403)
         with patch.object(app,'api_state',return_value={'models':[],'wakers':[],'whoami':{'name':'private'},'daemon':'running'}):
@@ -701,6 +701,108 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(status,200)
         self.assertEqual(json.loads(body)['status'],'succeeded')
         self.assertTrue(json.loads(body)['reconciled'])
+
+    def test_memory_docs_validation_and_route(self):
+        def daemon(method,path,body=None,timeout=20):
+            if path=='/api/agents/w1':
+                return {'data':{'agentId':'w1','employeeType':'assistant'}}
+            assert path=='/api/agents/w1/memory?view=all'
+            return {'data':{'scope':'agent','scopeId':'w1','index':{'path':'MEMORY.md','content':'# idx'},
+                            'topics':[{'path':'memory/account-info.md','content':'- mail'}],
+                            'sessions':[{'path':'sessions/2026/daily.md','content':'- note'}]}}
+        with patch.object(app,'daemon_json',side_effect=daemon):
+            status,_,body=self.request('GET','/api/memory?waker=w1',token=self.sec.admin)
+            self.assertEqual(status,200)
+            d=json.loads(body)
+            self.assertEqual(d['kind'],'files')
+            self.assertEqual([x['path'] for x in d['docs']],['MEMORY.md','memory/account-info.md','sessions/2026/daily.md'])
+            self.assertEqual(self.request('GET','/api/memory?waker=w1',token=self.sec.viewer)[0],403)
+            self.assertEqual(self.request('GET','/api/memory?waker=w1')[0],401)
+            # traversal-shaped path rejected by doc validation
+            def evil(method,path2,body=None,timeout=20):
+                if path2=='/api/agents/w1':
+                    return {'data':{'agentId':'w1'}}
+                return {'data':{'scope':'agent','scopeId':'w1','topics':[{'path':'../etc/passwd','content':'x'}]}}
+            app.daemon_json.side_effect=evil
+            status,_,body=self.request('GET','/api/memory?waker=w1',token=self.sec.admin)
+            self.assertEqual(status,400)
+
+    def test_avatar_memory_uses_graph_and_labels_existing_files_separately(self):
+        def daemon(method,path,body=None,timeout=20):
+            if path=='/api/agents/w1':
+                return {'data':{'agentId':'w1','employeeType':'personal_avatar'}}
+            if path.endswith('/personal-avatar/learning/graph'):
+                return {'data':{'memories':[{'memoryId':'m1','title':'偏好','content':'偏好简短回复',
+                                            'updatedAt':'2026-01-01','securityLevel':'private',
+                                            'internalBinding':'must-not-return'}]}}
+            self.assertEqual(path,'/api/agents/w1/memory?view=all')
+            return {'data':{'scopeId':'w1','topics':[{'path':'memory/notes.md','content':'旧文件'}]}}
+        with patch.object(app,'daemon_json',side_effect=daemon):
+            status,_,body=self.request('GET','/api/memory?waker=w1',token=self.sec.admin)
+        self.assertEqual(status,200)
+        data=json.loads(body)
+        self.assertEqual(data['kind'],'personal_avatar')
+        self.assertEqual(data['memories'][0]['content'],'偏好简短回复')
+        self.assertNotIn('internalBinding',data['memories'][0])
+        self.assertEqual(data['docs'][0]['content'],'旧文件')
+
+    def test_avatar_memory_keeps_initialization_error_when_legacy_files_are_readable(self):
+        def daemon(method,path,body=None,timeout=20):
+            if path=='/api/agents/w1':
+                return {'data':{'agentId':'w1','employeeType':'personal_avatar'}}
+            if path.endswith('/learning/graph'):
+                raise app.DaemonConflict('PERSONAL_AVATAR_DWS_LOGIN_REQUIRED')
+            return {'data':{'scopeId':'w1','topics':[{'path':'memory/notes.md','content':'旧文件'}]}}
+        with patch.object(app,'daemon_json',side_effect=daemon):
+            data=app.memory_data('w1')
+        self.assertEqual(data['status'],'unavailable')
+        self.assertEqual(data['error'],'PERSONAL_AVATAR_DWS_LOGIN_REQUIRED')
+        self.assertEqual(data['filesStatus'],'ready')
+        self.assertEqual(len(data['docs']),1)
+
+    def test_avatar_memory_preserves_graph_when_files_are_unavailable(self):
+        def daemon(method,path,body=None,timeout=20):
+            if path=='/api/agents/w1':
+                return {'data':{'agentId':'w1','employeeType':'personal_avatar'}}
+            if path.endswith('/learning/graph'):
+                return {'data':{'memories':[{'memoryId':'m1','content':'记忆内容'}]}}
+            raise app.DaemonRequestError(502,'daemon_response_too_large')
+        with patch.object(app,'daemon_json',side_effect=daemon):
+            data=app.memory_data('w1')
+        self.assertEqual(data['status'],'ready')
+        self.assertEqual(data['filesStatus'],'unavailable')
+        self.assertEqual(data['filesError'],'daemon_response_too_large')
+        self.assertEqual(len(data['memories']),1)
+
+    def test_memory_rejects_identity_mismatch_and_malformed_graph(self):
+        with patch.object(app,'daemon_json',return_value={'data':{'agentId':'another'}}):
+            with self.assertRaisesRegex(ValueError,'invalid_waker_detail'):
+                app.memory_data('w1')
+        for graph in [{'memories':{}},{'memories':[{'memoryId':'m1','content':[]}]}]:
+            with patch.object(app,'daemon_json',side_effect=[
+                    {'data':{'agentId':'w1','employeeType':'personal_avatar'}},
+                    {'data':graph},{'data':{'scopeId':'w1'}}]):
+                data=app.memory_data('w1')
+                self.assertEqual(data['status'],'unavailable')
+                self.assertEqual(data['memories'],[])
+
+    def test_memory_limits_utf8_bytes_and_marks_truncated_records(self):
+        with self.assertRaisesRegex(ValueError,'invalid_memory_doc'):
+            app.memory_doc({'path':'notes.md','content':'记'*70000})
+        with patch.object(app,'MEMORY_ITEM_LIMIT',1), patch.object(app,'daemon_json',return_value={
+                'data':{'scopeId':'w1','topics':[{'path':'a.md','content':'a'},{'path':'b.md','content':'b'}],
+                        'sessions':[{'path':'c.md','content':'c'}]}}):
+            data=app.memory_files('w1')
+        self.assertTrue(data['truncated'])
+        self.assertEqual([x['path'] for x in data['docs']],['a.md'])
+
+    def test_nested_daemon_error_code_is_preserved(self):
+        detail=app.daemon_error_detail({'success':False,'error':{
+            'namespace':'daemon','code':'PERSONAL_AVATAR_DWS_LOGIN_REQUIRED','retryable':False,
+            'secret':'must-not-return'}})
+        self.assertEqual(detail,{'code':'PERSONAL_AVATAR_DWS_LOGIN_REQUIRED','retryable':False})
+        with self.assertRaisesRegex(app.DaemonConflict,'PERSONAL_AVATAR_DWS_LOGIN_REQUIRED'):
+            app.daemon_request_error(409,detail)
 
     def test_usage_idempotent_append_and_rotation(self):
         p=app.RUNS/'test-run'/'qodercli.log';p.parent.mkdir(parents=True)

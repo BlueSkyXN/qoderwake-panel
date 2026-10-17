@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import test from 'node:test';
 
 const source=readFileSync(new URL('../panel/static/panel.js',import.meta.url),'utf8');
-const definition=source.split('\n').find(line=>line.startsWith('async function loadState()'));
+const definition=source.split('\n').find(line=>line.startsWith('async function loadState('));
 for(const admin of [false,true]){
   test(`${admin?'admin':'viewer'} state loader requests only permitted routes`,async()=>{
     const requested=[],banners=[];
