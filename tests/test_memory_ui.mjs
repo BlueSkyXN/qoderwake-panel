@@ -48,3 +48,9 @@ test('formal memory failure remains visible alongside legacy files and all text 
     memories:[{title:'<b>title</b>',content:'<img src=x>',updatedAt:'now'}]});
   assert.match(records,/分身记忆/);assert.match(records,/&lt;img/);assert.doesNotMatch(records,/<img/);
 });
+test('large document preview labels truncation and preserves the other document',()=>{
+  const f=fixture();const html=f.context.memoryContent({kind:'files',truncated:true,docs:[
+    {path:'MEMORY.md',content:'索引正文'},
+    {path:'sessions/large.md',content:'长文前部',truncated:true}]});
+  assert.match(html,/索引正文/);assert.match(html,/长文前部/);assert.match(html,/前 200 KiB/);
+});

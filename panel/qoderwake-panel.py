@@ -56,7 +56,7 @@ DAEMON_BIN = os.environ.get('QW_DAEMON_BIN') or 'qoderwake-cn'
 DAEMON = os.environ.get('QW_DAEMON_URL') or 'http://127.0.0.1:19830'
 PORT = int(os.environ.get('QW_PORT') or 19831)
 BIND = os.environ.get('QW_BIND') or '127.0.0.1'
-VERSION = '0.12.5'
+VERSION = '0.12.6'
 ASSETS = Path(__file__).resolve().parent / 'static'
 SECURITY = None
 PATCHES = None
@@ -859,8 +859,12 @@ def memory_doc(doc):
         raise ValueError('invalid_memory_doc')
     if not re.fullmatch(r'[A-Za-z0-9_./ -]{1,200}', path):
         raise ValueError('invalid_memory_doc')
-    if not isinstance(content, str) or len(content.encode('utf-8')) > MEMORY_TEXT_LIMIT:
+    if not isinstance(content, str):
         raise ValueError('invalid_memory_doc')
+    encoded = content.encode('utf-8')
+    if len(encoded) > MEMORY_TEXT_LIMIT:
+        return {'path': path, 'content': encoded[:MEMORY_TEXT_LIMIT].decode('utf-8', errors='ignore'),
+                'truncated': True}
     return {'path': path, 'content': content}
 
 
@@ -881,6 +885,7 @@ def memory_files(wid):
         available = max(0, MEMORY_ITEM_LIMIT - len(result['docs']))
         result['truncated'] |= len(rows) > available
         result['docs'].extend(memory_doc(row) for row in rows[:available])
+    result['truncated'] |= any(doc.get('truncated', False) for doc in result['docs'])
     return result
 
 

@@ -787,14 +787,28 @@ class PanelTests(unittest.TestCase):
                 self.assertEqual(data['memories'],[])
 
     def test_memory_limits_utf8_bytes_and_marks_truncated_records(self):
-        with self.assertRaisesRegex(ValueError,'invalid_memory_doc'):
-            app.memory_doc({'path':'notes.md','content':'记'*70000})
+        doc=app.memory_doc({'path':'notes.md','content':'记'*70000})
+        self.assertTrue(doc['truncated'])
+        self.assertLessEqual(len(doc['content'].encode('utf-8')),app.MEMORY_TEXT_LIMIT)
+        self.assertNotIn('\ufffd',doc['content'])
         with patch.object(app,'MEMORY_ITEM_LIMIT',1), patch.object(app,'daemon_json',return_value={
                 'data':{'scopeId':'w1','topics':[{'path':'a.md','content':'a'},{'path':'b.md','content':'b'}],
                         'sessions':[{'path':'c.md','content':'c'}]}}):
             data=app.memory_files('w1')
         self.assertTrue(data['truncated'])
         self.assertEqual([x['path'] for x in data['docs']],['a.md'])
+
+    def test_large_history_document_does_not_hide_other_memory_files(self):
+        with patch.object(app,'daemon_json',return_value={'data':{
+                'scopeId':'w1','index':{'path':'MEMORY.md','content':'索引'},
+                'topics':[{'path':'memory/note.md','content':'主题'}],
+                'sessions':[{'path':'sessions/history.md','content':'历史'*150000}]}}):
+            data=app.memory_files('w1')
+        self.assertEqual(len(data['docs']),3)
+        self.assertEqual(data['docs'][0]['content'],'索引')
+        self.assertEqual(data['docs'][1]['content'],'主题')
+        self.assertTrue(data['docs'][2]['truncated'])
+        self.assertTrue(data['truncated'])
 
     def test_nested_daemon_error_code_is_preserved(self):
         detail=app.daemon_error_detail({'success':False,'error':{
