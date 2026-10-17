@@ -16,7 +16,7 @@ QoderWake 1.1.12 的个人分身支持文件模式和接入钉钉的模式。在
 - `PERSONAL_AVATAR_DWS_LOGIN_REQUIRED`：分身身份解析需要钉钉登录。只使用本地文件时，完成官方文件模式设置；需要钉钉数据时，完成 DWS 登录。
 - `PERSONAL_AVATAR_OWNER_REQUIRED`：在官方控制台重新登录当前所有者账号。
 - `PERSONAL_AVATAR_ACCOUNT_CHANGED`：重新确认当前身份及分身记忆设置。
-- 内容超过读取上限：到官方控制台查看。Panel 单次上游响应限 1 MiB，单条正文限 200 KiB；条目数量截断会在页面提示。
+- 单次上游响应超过 1 MiB：到官方控制台查看。0.12.6 起，单条文件正文超过 200 KiB 时显示前部内容并提示截断，其他文档继续显示；条目数量截断也会提示。
 
 纯文件模式的官方初始化接口为 `POST /api/agents/:agentId/personal-avatar/input/files/prepare`，请求体为 `{"imEnabled":false}`，需使用该实例已授权的官方身份。该操作会创建持久绑定，运维执行前应保留数据库一致备份，并先确定使用文件模式。Panel 的记忆读取请求不自动初始化或切换模式。
 
