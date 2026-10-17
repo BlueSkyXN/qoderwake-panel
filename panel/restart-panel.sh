@@ -34,4 +34,4 @@ exec "$PYTHON" "$CONTROL" start \
   --mode panel \
   --log "$QW_ROOT/logs/qw-panel.log" \
   "${HEALTH_ARGS[@]}" \
-  --expected-version 0.12.6
+  --expected-version 0.12.7

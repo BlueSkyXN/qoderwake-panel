@@ -1,5 +1,6 @@
 # 文档
 
+- [Provider 运行兼容](provider-runtime.md)：群聊助理遗漏用户级 Provider 的原因、Linux 启动兼容工具及回滚。
 - [记忆页](memory.md)：分身与工作区记忆的数据来源、初始化和 MCP 验收。
 - [0.12.4 页面加载不再计算文件哈希](development-0124.md)：受管身份只比较路径、设备号和 inode；内容哈希改为增强管理页的按需后台检查。
 - [0.12.3 BYOK 运行开关、遥测控制与诊断](development-0123.md)：BYOK 开关三态、遥测写入与显示修复、403 诊断、白名单清单；生产升级与 daemon 首次受管迁管。
