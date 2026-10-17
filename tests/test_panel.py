@@ -760,6 +760,25 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(data['filesStatus'],'ready')
         self.assertEqual(len(data['docs']),1)
 
+    def test_large_avatar_record_keeps_other_memories_and_utf8_preview(self):
+        with patch.object(app,'daemon_json',side_effect=[
+                {'data':{'agentId':'w1','employeeType':'personal_avatar'}},
+                {'data':{'memories':[{'memoryId':'short','content':'已有记忆'},
+                                     {'memoryId':'long','content':'记'*70000}]}},
+                {'data':{'scopeId':'w1'}}]):
+            status,_,body=self.request('GET','/api/memory?waker=w1',token=self.sec.admin)
+        self.assertEqual(status,200)
+        data=json.loads(body)
+        self.assertEqual(data['status'],'ready')
+        self.assertEqual(len(data['memories']),2)
+        self.assertEqual(data['memories'][0]['content'],'已有记忆')
+        self.assertNotIn('truncated',data['memories'][0])
+        preview=data['memories'][1]
+        self.assertTrue(preview['truncated'])
+        self.assertLessEqual(len(preview['content'].encode('utf-8')),app.MEMORY_TEXT_LIMIT)
+        self.assertNotIn('\ufffd',preview['content'])
+        self.assertTrue(data['truncated'])
+
     def test_avatar_memory_preserves_graph_when_files_are_unavailable(self):
         def daemon(method,path,body=None,timeout=20):
             if path=='/api/agents/w1':

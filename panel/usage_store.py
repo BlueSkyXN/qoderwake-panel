@@ -11,6 +11,8 @@ MAX_SCAN_BYTES = 8 * 1024 * 1024
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_LINE_BYTES = 65536
 GUARD_BYTES = 4096
+CURSOR_COLUMNS = ('device', 'inode', 'offset', 'prefix', 'suffix', 'discarding',
+                  'skipped', 'size', 'mtime_ns')
 
 
 def initialize(path):
@@ -34,10 +36,12 @@ def initialize(path):
             CREATE TABLE IF NOT EXISTS usage_occurrences(
                 path TEXT, line_hash TEXT, count INTEGER, PRIMARY KEY(path,line_hash));
         ''')
-        existing = [row[1] for row in con.execute('PRAGMA table_info(usage_cursors)')]
-        if 'size' not in existing:
-            con.execute('ALTER TABLE usage_cursors ADD COLUMN size INTEGER')
-            con.execute('ALTER TABLE usage_cursors ADD COLUMN mtime_ns INTEGER')
+        # 串行检查并补齐旧表；兼容先前升级中断后只增加了一列的数据库。
+        con.execute('BEGIN IMMEDIATE')
+        existing = {row[1] for row in con.execute('PRAGMA table_info(usage_cursors)')}
+        for column in ('size', 'mtime_ns'):
+            if column not in existing:
+                con.execute(f'ALTER TABLE usage_cursors ADD COLUMN {column} INTEGER')
     con.close()
 
 
@@ -57,9 +61,8 @@ def scan_file(con, path, budget):
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
             raise ValueError('unsafe_usage_log')
-        columns = [row[1] for row in con.execute('PRAGMA table_info(usage_cursors)')]
-        row = con.execute('SELECT %s FROM usage_cursors WHERE path=?' % ','.join(columns), (name,)).fetchone() if columns else None
-        previous = dict(zip(columns, row)) if row else None
+        row = con.execute('SELECT %s FROM usage_cursors WHERE path=?' % ','.join(CURSOR_COLUMNS), (name,)).fetchone()
+        previous = dict(zip(CURSOR_COLUMNS, row)) if row else None
         offset, discarding, skipped, checked = 0, False, 0, 0
         if previous and (previous['device'], previous['inode']) == (info.st_dev, info.st_ino) and previous['offset'] <= info.st_size:
             unchanged = (previous['offset'] == info.st_size and
@@ -115,7 +118,7 @@ def scan_file(con, path, budget):
             con.execute('INSERT OR IGNORE INTO usage_events VALUES(?,?,?,?,?)', (key, stamp[:10], match.group(1), path.parent.name, stamp))
             con.execute('INSERT OR REPLACE INTO usage_occurrences VALUES(?,?,?)', (name, line_hash, occurrence + 1))
         prefix, suffix, extra = guards(stream, offset)
-        con.execute('INSERT OR REPLACE INTO usage_cursors VALUES(?,?,?,?,?,?,?,?,?,?)',
+        con.execute('INSERT OR REPLACE INTO usage_cursors(path,%s) VALUES(?,?,?,?,?,?,?,?,?,?)' % ','.join(CURSOR_COLUMNS),
                     (name, info.st_dev, info.st_ino, offset, prefix, suffix, int(discarding), skipped,
                      info.st_size, info.st_mtime_ns))
         return {'bytesRead': read, 'guardBytesRead': checked + extra,

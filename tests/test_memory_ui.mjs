@@ -54,3 +54,11 @@ test('large document preview labels truncation and preserves the other document'
     {path:'sessions/large.md',content:'长文前部',truncated:true}]});
   assert.match(html,/索引正文/);assert.match(html,/长文前部/);assert.match(html,/前 200 KiB/);
 });
+test('large formal memory labels its preview without hiding other records',()=>{
+  const f=fixture();const html=f.context.memoryContent({kind:'personal_avatar',status:'ready',truncated:true,
+    memories:[{title:'短记忆',content:'完整正文'},
+      {title:'长记忆',content:'<preview>',truncated:true}],docs:[]});
+  assert.match(html,/完整正文/);assert.match(html,/&lt;preview&gt;/);
+  assert.equal((html.match(/前 200 KiB/g)||[]).length,1);
+  assert.doesNotMatch(html,/<preview>/);
+});

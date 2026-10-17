@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -212,6 +214,74 @@ class UsageTests(unittest.TestCase):
             con.execute('DROP TABLE usage_occurrences')
         self.assertEqual(self.count(self.read()), 1)
 
+    def test_cursor_migration_recovers_partial_columns_and_preserves_history(self):
+        for index, extras in enumerate(((), ('size',), ('mtime_ns',), ('mtime_ns', 'size'))):
+            with self.subTest(existing_columns=extras):
+                self.database = self.root / f'usage-{index}.db'
+                self.path.write_text(self.line * 2)
+                self.assertEqual(self.count(self.read()), 2)
+                columns = ('path', 'device', 'inode', 'offset', 'prefix', 'suffix',
+                           'discarding', 'skipped', *extras)
+                with sqlite3.connect(self.database) as con:
+                    con.execute('ALTER TABLE usage_cursors RENAME TO prior_cursors')
+                    con.execute('CREATE TABLE usage_cursors(path TEXT PRIMARY KEY, '
+                                'device INTEGER, inode INTEGER, offset INTEGER, '
+                                'prefix TEXT, suffix TEXT, discarding INTEGER, skipped INTEGER' +
+                                ''.join(f', {name} INTEGER' for name in extras) + ')')
+                    names = ','.join(columns)
+                    con.execute(f'INSERT INTO usage_cursors({names}) SELECT {names} FROM prior_cursors')
+                    con.execute('DROP TABLE prior_cursors')
+                self.assertEqual(self.count(self.read()), 2)
+                self.assertEqual(self.count(self.read()), 2)
+                with self.path.open('a') as stream:
+                    stream.write(self.line)
+                self.assertEqual(self.count(self.read()), 3)
+                with sqlite3.connect(self.database) as con:
+                    row = con.execute('SELECT size,mtime_ns FROM usage_cursors').fetchone()
+                self.assertEqual(row, (self.path.stat().st_size, self.path.stat().st_mtime_ns))
+
+    def test_unchanged_cursor_skips_content_reads_and_database_writes(self):
+        self.path.write_text(self.line)
+        self.read()
+        with sqlite3.connect(self.database) as con, \
+                patch.object(usage_store, 'guards', side_effect=AssertionError('unchanged log read')):
+            before = con.total_changes
+            value = usage_store.scan_file(con, self.path, usage_store.MAX_FILE_BYTES)
+            self.assertEqual(con.total_changes, before)
+        self.assertEqual(value['bytesRead'], 0)
+        self.assertEqual(value['guardBytesRead'], 0)
+        self.assertFalse(value['pending'])
+
+    def test_server_scans_usage_without_an_initial_page_request(self):
+        daemon_home = self.root / 'home'
+        log = daemon_home / 'qodercli/logs/runs/one/qodercli.log'
+        log.parent.mkdir(parents=True)
+        log.write_text(self.line)
+        process = subprocess.Popen([sys.executable, '-B', str(ROOT / 'panel/qoderwake-panel.py')],
+            env={**os.environ, 'QW_ROOT': str(self.root), 'QW_HOME': str(daemon_home),
+                 'QW_BIND': '127.0.0.1', 'QW_PORT': '0', 'QW_TLS_CERT': '', 'QW_TLS_KEY': ''},
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        try:
+            count = 0
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    self.fail('Panel exited before its background scan')
+                if self.database.exists():
+                    try:
+                        with sqlite3.connect(self.database) as con:
+                            count = con.execute('SELECT COUNT(*) FROM usage_events').fetchone()[0]
+                    except sqlite3.OperationalError:
+                        pass
+                if count:
+                    break
+                time.sleep(0.05)
+            self.assertEqual(count, 1)
+        finally:
+            if process.poll() is None:
+                process.terminate()
+            process.communicate(timeout=10)
+
     def test_large_logs_progress_under_per_request_budget(self):
         self.path.write_text(('unrelated log data\n' * 20000) + self.line)
         with patch.multiple(usage_store, MAX_SCAN_BYTES=80000, MAX_FILE_BYTES=40000):
@@ -239,6 +309,29 @@ class UsageTests(unittest.TestCase):
         self.path.unlink()
         os.mkfifo(self.path)
         self.assertEqual(self.read()['scan']['unavailableFiles'], 1)
+
+
+class UsageCacheTests(unittest.TestCase):
+    def test_concurrent_cold_requests_do_not_start_background_scanners(self):
+        original_thread = threading.Thread
+        barrier = threading.Barrier(2)
+        results = []
+
+        def scan():
+            barrier.wait(timeout=3)
+            return {'scan': {'complete': True}}
+
+        with patch.dict(app.USAGE_CACHE, {'at': 0, 'data': None, 'db': None, 'probe': None}, clear=True), \
+                patch.object(app, 'usage_scan_once', side_effect=scan), \
+                patch.object(app.threading, 'Thread') as spawned:
+            callers = [original_thread(target=lambda: results.append(app.usage_data())) for _ in range(2)]
+            for caller in callers:
+                caller.start()
+            for caller in callers:
+                caller.join(timeout=5)
+                self.assertFalse(caller.is_alive())
+            self.assertEqual(len(results), 2)
+            spawned.assert_not_called()
 
 
 class CompletionPanelTests(unittest.TestCase):
