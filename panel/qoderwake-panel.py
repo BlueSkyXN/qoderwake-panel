@@ -56,7 +56,7 @@ DAEMON_BIN = os.environ.get('QW_DAEMON_BIN') or 'qoderwake-cn'
 DAEMON = os.environ.get('QW_DAEMON_URL') or 'http://127.0.0.1:19830'
 PORT = int(os.environ.get('QW_PORT') or 19831)
 BIND = os.environ.get('QW_BIND') or '127.0.0.1'
-VERSION = '0.12.4'
+VERSION = '0.12.5'
 ASSETS = Path(__file__).resolve().parent / 'static'
 SECURITY = None
 PATCHES = None
@@ -205,15 +205,74 @@ def providers_state():
 
 
 USAGE_LOCK = threading.Lock()
+USAGE_CACHE = {'at': 0.0, 'data': None, 'db': None, 'probe': None}
+USAGE_TTL = 15.0
 
 
 def init_db():
     usage_store.initialize(DB)
 
 
+def usage_probe():
+    """Cheap change signal: newest mtime across run logs (stat-only, no reads)."""
+    newest = 0
+    count = 0
+    try:
+        for entry in os.scandir(RUNS):
+            try:
+                log = os.stat(entry.path + '/qodercli.log', follow_symlinks=False)
+            except OSError:
+                continue
+            count += 1
+            if log.st_mtime_ns > newest:
+                newest = log.st_mtime_ns
+    except OSError:
+        return None
+    return (newest, count)
+
+
+def usage_cache_fresh():
+    return (USAGE_CACHE['data'] is not None and
+            USAGE_CACHE['db'] == str(DB) and
+            USAGE_CACHE['probe'] == usage_probe() and
+            time.monotonic() - USAGE_CACHE['at'] <= USAGE_TTL)
+
+
+def usage_scan_once():
+    """One bounded incremental scan; also refreshes the served snapshot."""
+    with USAGE_LOCK:
+        data = usage_store.usage_data(DB, RUNS)
+        USAGE_CACHE.update(data=data, at=time.monotonic(), db=str(DB), probe=usage_probe())
+        return data
+
+
+def usage_background():
+    while True:
+        try:
+            data = usage_scan_once()
+            complete = data.get('scan', {}).get('complete')
+            # with a backlog keep draining fast; otherwise idle-scan every TTL
+            # so the served snapshot tracks new turns without a user request
+            time.sleep(2 if not complete else USAGE_TTL)
+        except Exception:
+            time.sleep(30)
+
+
 def usage_data():
     with USAGE_LOCK:
-        return usage_store.usage_data(DB, RUNS)
+        if usage_cache_fresh():
+            return dict(USAGE_CACHE['data'])
+        first_miss = USAGE_CACHE['data'] is None
+    data = usage_scan_once()
+    if first_miss:
+        threading.Thread(target=usage_background, daemon=True).start()
+    return data
+
+
+def invalidate_usage():
+    """Force the next usage_data() to rescan (call after turn-producing writes)."""
+    with USAGE_LOCK:
+        USAGE_CACHE['at'] = 0.0
 
 
 def egress_data():
@@ -519,9 +578,10 @@ def daemon_error_detail(value):
     if not isinstance(value, dict):
         return {}
     data = value.get('data') if isinstance(value.get('data'), dict) else {}
+    error = value.get('error') if isinstance(value.get('error'), dict) else {}
     detail = {}
     for key in ('code', 'operationId', 'pendingId', 'status', 'retryable', 'currentRevision'):
-        candidate = value.get(key, data.get(key))
+        candidate = value.get(key, data.get(key, error.get(key)))
         if isinstance(candidate, (str, int, bool)) and len(str(candidate)) <= 256:
             detail[key] = candidate
     return detail
@@ -785,6 +845,95 @@ def waker_detail(wid):
         raise ValueError('invalid_waker_detail')
     return {k: d.get(k) for k in ('agentId', 'id', 'name', 'description', 'sessionTimeout', 'skills',
                                   'systemIdentity', 'revision', 'version', 'updatedAt', 'updated_at')}
+
+
+MEMORY_TEXT_LIMIT = 200 * 1024
+MEMORY_ITEM_LIMIT = 2000
+
+
+def memory_doc(doc):
+    if not isinstance(doc, dict):
+        raise ValueError('invalid_memory_doc')
+    path, content = doc.get('path'), doc.get('content', '')
+    if not isinstance(path, str) or not path or '..' in path or path.startswith('/') or path.startswith('.'):
+        raise ValueError('invalid_memory_doc')
+    if not re.fullmatch(r'[A-Za-z0-9_./ -]{1,200}', path):
+        raise ValueError('invalid_memory_doc')
+    if not isinstance(content, str) or len(content.encode('utf-8')) > MEMORY_TEXT_LIMIT:
+        raise ValueError('invalid_memory_doc')
+    return {'path': path, 'content': content}
+
+
+def memory_files(wid):
+    d = daemon_json('GET', '/api/agents/%s/memory?view=all' % safe_id(wid)).get('data')
+    if not isinstance(d, dict) or (d.get('scopeId') or d.get('agentId')) != wid:
+        raise ValueError('memory_unavailable')
+    result = {'scope': d.get('scope'), 'docs': [], 'truncated': False}
+    for section in ('index',):
+        if d.get(section) is not None:
+            result['docs'].append(memory_doc(d[section]))
+    for section in ('topics', 'sessions'):
+        rows = d.get(section)
+        if rows is None:
+            continue
+        if not isinstance(rows, list):
+            raise ValueError('invalid_memory_doc')
+        available = max(0, MEMORY_ITEM_LIMIT - len(result['docs']))
+        result['truncated'] |= len(rows) > available
+        result['docs'].extend(memory_doc(row) for row in rows[:available])
+    return result
+
+
+def avatar_memory(row):
+    if not isinstance(row, dict):
+        raise ValueError('invalid_memory_record')
+    result = {}
+    for key, limit in (('memoryId', 200), ('title', 1000), ('content', MEMORY_TEXT_LIMIT),
+                       ('updatedAt', 100), ('securityLevel', 100)):
+        value = row.get(key, '')
+        if not isinstance(value, str) or len(value.encode('utf-8')) > limit:
+            raise ValueError('invalid_memory_record')
+        result[key] = value
+    if not result['memoryId'] or not result['content']:
+        raise ValueError('invalid_memory_record')
+    return result
+
+
+def memory_failure(error):
+    if isinstance(error, DaemonRequestError):
+        return error.code
+    if isinstance(error, DaemonConflict):
+        return str(error)
+    return 'memory_unavailable'
+
+
+def memory_data(wid):
+    wid = safe_id(wid)
+    agent = daemon_json('GET', '/api/agents/' + wid).get('data')
+    if not isinstance(agent, dict) or (agent.get('agentId') or agent.get('id')) != wid:
+        raise ValueError('invalid_waker_detail')
+    if agent.get('employeeType') != 'personal_avatar':
+        return {'kind': 'files', 'status': 'ready', **memory_files(wid)}
+
+    result = {'kind': 'personal_avatar', 'status': 'ready', 'memories': [],
+              'docs': [], 'filesStatus': 'ready', 'truncated': False}
+    # 正式分身记忆与旧文件分别读取；任一来源失败都保留另一来源的结果。
+    try:
+        graph = daemon_json('GET', '/api/agents/%s/personal-avatar/learning/graph' % wid).get('data')
+        if not isinstance(graph, dict) or not isinstance(graph.get('memories'), list):
+            raise ValueError('invalid_memory_record')
+        rows = graph['memories']
+        result['memories'] = [avatar_memory(row) for row in rows[:MEMORY_ITEM_LIMIT]]
+        result['truncated'] = len(rows) > MEMORY_ITEM_LIMIT
+    except (DaemonRequestError, DaemonConflict, ValueError, OSError) as error:
+        result.update(status='unavailable', error=memory_failure(error))
+    try:
+        files = memory_files(wid)
+        result['docs'] = files['docs']
+        result['truncated'] |= files['truncated']
+    except (DaemonRequestError, DaemonConflict, ValueError, OSError) as error:
+        result.update(filesStatus='unavailable', filesError=memory_failure(error))
+    return result
 
 
 def deletion_wakers():
@@ -1351,6 +1500,7 @@ UPLINK_SWITCHES = {
 }
 
 SDK_BYOK_SWITCH = 'QODER_SDK_CUSTOM_BASE_URL_BYOK'
+QCS_ENDPOINT_OVERRIDE = os.environ.get('QODER_CONFIG_SERVICE_URL') or 'http://qwgw.local.test:19840'
 SDK_BYOK_DEFAULT = True
 
 
@@ -1399,6 +1549,7 @@ def runtime_env():
     env['QODERWAKE_HOT_DEPLOY'] = '1' if policy['hotDeploy'] else '0'
     env['QODER_MEMORY_DISABLE_EMBEDDING'] = '1' if policy['embeddingDisabled'] else '0'
     env[SDK_BYOK_SWITCH] = '1' if policy.get('sdkByok', SDK_BYOK_DEFAULT) else '0'
+    env['QODER_CONFIG_SERVICE_URL'] = QCS_ENDPOINT_OVERRIDE
     for key, variable in UPLINK_SWITCHES.items():
         if policy.get(key) is not None:
             env[variable] = '1' if policy[key] else '0'
@@ -1985,6 +2136,8 @@ class H(BaseHTTPRequestHandler):
                 d = chat_messages(arg('session'))
             elif u.path == '/api/waker/detail':
                 d = waker_detail(arg('id'))
+            elif u.path == '/api/memory':
+                d = memory_data(arg('waker'))
             elif u.path == '/api/net/state':
                 d = net_state()
             elif u.path == '/api/patch/state':
@@ -2287,6 +2440,7 @@ class H(BaseHTTPRequestHandler):
                 ok, msg = fw_action(b.get('action'))
                 result = {'ok': ok, 'message': msg}
             invalidate_state()
+            invalidate_usage()
             if result.get('status') in ('pending', 'unknown'):
                 return self.out(202, result)
             return self.out(200 if result.get('ok') else 502, result)

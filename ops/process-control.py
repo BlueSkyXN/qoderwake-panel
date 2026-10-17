@@ -61,8 +61,10 @@ GATEWAY_ENV = {
     'QODERWAKE_CENTER_BASE_URL', 'QODERWAKE_OPENAPI_BASE_URL',
     'QODERWAKE_CODEBASE_BASE_URL', 'QODERWAKE_API_INVOKE_BASE_URL',
     'QODER_SERVER_ENDPOINT', 'QODER_CENTER_ENDPOINT',
-    'QODER_CONFIG_SERVICE_URL'
 }
+# QCS config endpoint override (QODER_CONFIG_SERVICE_URL) is honored in direct
+# mode too: 1.1.9 reads it natively, so the loopback gateway can serve QCS
+# without full gateway mode.
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -785,7 +787,8 @@ class Controller:
         finally:
             os.close(fd)
         state = None
-        for _ in range(120):
+        # 1.1.9 cold start takes ~35s to bind the port; wait up to 60s.
+        for _ in range(240):
             if process.poll() is not None:
                 process.wait()
                 self.remove_state()

@@ -1,6 +1,6 @@
 # QoderWake Panel
 
-自管 QoderWake 的增强面板与运维工具。当前源码、公开 Release 与参考生产 Panel 均为 **0.12.2**（2026-10-06）；集中修复运行态、上行开关、日志读取、状态/用量性能与浏览器路由，见 [统一修复验收](docs/development-0122.md)。服务器仅升级 Panel，**19/19 运行文件**核验通过；daemon 基线仍为 Linux CN **1.1.6**，daemon 和旧网关未重启或首次迁管。因此面板尾读优化已生效，网关日志轮转尚未在生产启用。源码发布、部署与真实业务验收分别记录在 [验收矩阵](docs/acceptance.md)。
+自管 QoderWake 的增强面板与运维工具。**0.12.5** 增加按机器人类型读取的记忆页，修复记忆权限与切换错位，并优化用量扫描、适配 QoderWake 1.1.12。记忆设置见 [记忆页说明](docs/memory.md)，版本变化见 [Changelog](CHANGELOG.md)。
 
 **它不是官方控制台的完整替代，也未实现整机零上行、受保护业务免登录或完全锁版。官方 memory Embedding 默认关闭，通用 Embedding BYOK 暂不作为主线。** 功能与证据边界见 [验收记录](docs/acceptance.md)。
 
@@ -11,6 +11,7 @@
 ## 功能
 
 - 总览、基础聊天、单模型 OpenAI-compatible Provider 编辑、Waker 默认模型与基础编辑。
+- 管理员记忆页：个人分身正式记忆与工作区记忆文件分别展示，初始化失败显示具体处理方式。
 - 按模型和日期汇总回合日志，持久游标增量读取、单请求限量并显示未扫描完/不可读/超长行；不是 token 计量或计费看板。
 - 网络状态只读取最多 1 MiB / 5,000 行尾部；新版受管网关日志 8 MiB、保留三份历史，旧部署日志不自动清理。
 - 备份、调用审计、daemon 连接快照、网关规则管理与 QCS 补丁标记检查。
@@ -30,7 +31,7 @@
 私有仓用于实验与研究；公开仓由维护者**手工挑选有用内容、脱敏、标准化后发布**。不自动同步，不搬私有 Git 历史。零补丁与补丁两类能力可以并存；不是两个公私功能版本。
 
 - 零补丁侧：官方 API / CLI / 配置、可选控制面过滤网关。
-- 补丁侧：QCS 端点模块通过同一安全管理器提供网页/CLI 入口。仅注册 1.1.6 CN Linux x64 的完整输入和输出哈希；不默认应用，也不等于全部隐私模块已移植。
+- 补丁侧：QCS 端点模块通过同一安全管理器提供网页/CLI 入口。注册 1.1.6、1.1.9、1.1.12 CN Linux x64 的完整输入和输出哈希；不默认应用，也不等于全部隐私模块已移植。
 - 任何升级均需重新验证接口、主题、启动环境和补丁，不能宣称“升级免疫”。
 
 ## 启动
@@ -87,7 +88,7 @@ curl -X POST http://127.0.0.1:19831/api/gw \
 
 ## 权限与安全
 
-- admin：管理、会话正文、配置、审计；viewer：状态、模型名称、机器人列表、用量、插件摘要。服务端强制权限，不只隐藏按钮。
+- admin：管理、会话正文、记忆正文、配置、审计；viewer：状态、模型名称、机器人列表、用量、插件摘要。服务端强制权限，不只隐藏按钮。
 - Cookie 会话最长 7 天、闲置 12 小时过期，退出立即撤销；原生 HTTPS 自动加 `Secure`。
 - Cookie 写请求要求同源 Origin 与 CSRF；API 支持 Bearer。拒绝 URL 凭据。
 - 登录与消费请求限速落 SQLite；审计记录时间、调用者标识、角色、路径、目标 ID、状态，不写消息正文或凭据。
@@ -113,6 +114,6 @@ bash scripts/check-release.sh
 
 Node 仅用于开发期 JavaScript 语法和回归测试。发布检查只检查候选目录，不拷贝、不 commit、不 push。测试缓存、实际配置、数据库、令牌、备份不得进公开快照；检查通过不等于安全认证。
 
-[公开仓](https://github.com/BlueSkyXN/qoderwake-panel) 与 [v0.12.2 Release](https://github.com/BlueSkyXN/qoderwake-panel/releases/tag/v0.12.2) 已发布，两个源码附件重新下载验证为 71/71 文件与标签提交一致。既有版本标签和附件保持原样；后续 `main` 可补充交付文档而不移动标签。基线、两仓职责和 PR 规则见 [维护约定](docs/maintenance.md)。
+源码、标签和附件发布在 [公开仓](https://github.com/BlueSkyXN/qoderwake-panel) 与 [Releases](https://github.com/BlueSkyXN/qoderwake-panel/releases)。既有标签和附件保持原样；发布与服务器升级分别验收，见 [维护约定](docs/maintenance.md)。
 
 详细设计：[网络控制](docs/uplink-control.md) · [验收状态](docs/acceptance.md) · [部署与升级](docs/deployment.md) · [维护与 PR](docs/maintenance.md)。
