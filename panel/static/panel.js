@@ -75,7 +75,7 @@ function memoryContent(data){
   const documents=(data.docs||[]).map((doc,index)=>`<details class="card" ${index===0?'open':''}><summary>${esc(doc.path)}</summary><pre class="mono">${esc(doc.content)}</pre>${doc.truncated?'<p class="muted">正文较长，当前显示前 200 KiB；完整内容请在官方控制台查看。</p>':''}</details>`).join('');
   let html='';
   if(data.kind==='personal_avatar'){
-    const records=(data.memories||[]).map(memory=>card(memory.title||'记忆',`<pre class="mono">${esc(memory.content)}</pre>${memory.updatedAt?`<p class="fine muted">更新于 ${esc(memory.updatedAt)}</p>`:''}`)).join('');
+    const records=(data.memories||[]).map(memory=>card(memory.title||'记忆',`<pre class="mono">${esc(memory.content)}</pre>${memory.truncated?'<p class="muted">正文较长，当前显示前 200 KiB；完整内容请在官方控制台查看。</p>':''}${memory.updatedAt?`<p class="fine muted">更新于 ${esc(memory.updatedAt)}</p>`:''}`)).join('');
     html=card('分身记忆',data.status==='unavailable'?`<p class="error-text">${esc(memoryError(data.error))}</p>`:records||empty('尚无分身记忆。可在对话中让分身记住信息。'));
     if(documents||data.filesStatus==='unavailable')html+=`<details class="card"><summary>工作区记忆文件</summary>${data.filesStatus==='unavailable'?`<p class="error-text">${esc(memoryError(data.filesError))}</p>`:documents}</details>`;
   }else html=card('工作区记忆文件',documents||empty('暂无记忆文档。'));

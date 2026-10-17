@@ -262,11 +262,7 @@ def usage_data():
     with USAGE_LOCK:
         if usage_cache_fresh():
             return dict(USAGE_CACHE['data'])
-        first_miss = USAGE_CACHE['data'] is None
-    data = usage_scan_once()
-    if first_miss:
-        threading.Thread(target=usage_background, daemon=True).start()
-    return data
+    return usage_scan_once()
 
 
 def invalidate_usage():
@@ -896,8 +892,14 @@ def avatar_memory(row):
     for key, limit in (('memoryId', 200), ('title', 1000), ('content', MEMORY_TEXT_LIMIT),
                        ('updatedAt', 100), ('securityLevel', 100)):
         value = row.get(key, '')
-        if not isinstance(value, str) or len(value.encode('utf-8')) > limit:
+        if not isinstance(value, str):
             raise ValueError('invalid_memory_record')
+        encoded = value.encode('utf-8')
+        if len(encoded) > limit:
+            if key != 'content':
+                raise ValueError('invalid_memory_record')
+            value = encoded[:limit].decode('utf-8', errors='ignore')
+            result['truncated'] = True
         result[key] = value
     if not result['memoryId'] or not result['content']:
         raise ValueError('invalid_memory_record')
@@ -929,7 +931,8 @@ def memory_data(wid):
             raise ValueError('invalid_memory_record')
         rows = graph['memories']
         result['memories'] = [avatar_memory(row) for row in rows[:MEMORY_ITEM_LIMIT]]
-        result['truncated'] = len(rows) > MEMORY_ITEM_LIMIT
+        result['truncated'] = (len(rows) > MEMORY_ITEM_LIMIT or
+                               any(row.get('truncated', False) for row in result['memories']))
     except (DaemonRequestError, DaemonConflict, ValueError, OSError) as error:
         result.update(status='unavailable', error=memory_failure(error))
     try:
@@ -2482,5 +2485,6 @@ if __name__ == '__main__':
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(cert, key)
         server.socket = context.wrap_socket(server.socket, server_side=True)
+    threading.Thread(target=usage_background, name='usage-scanner', daemon=True).start()
     print('QoderWake Panel %s listening on %s:%d (%s)' % (VERSION, BIND, PORT, 'HTTPS' if cert else 'HTTP'), flush=True)
     server.serve_forever()

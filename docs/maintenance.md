@@ -1,6 +1,6 @@
 # 维护、快照与 PR 约定
 
-适用于 Panel **0.12.2**，更新日期 **2026-10-06**。公开源码发布与生产 Panel 单独升级均已完成；旧 daemon/网关未首次迁管，历史标签和附件保持不变。本项目公开源码采用 [PolyForm Noncommercial 1.0.0](../LICENSE)；非商业用途按许可使用，商业使用需另行授权。项目不是 Qoder / QoderWake 官方产品。
+更新日期 **2026-10-18**。当前公开发布基线为 **0.12.7**，后续源码修复记入 [Changelog 的未发布部分](../CHANGELOG.md)。本项目公开源码采用 [PolyForm Noncommercial 1.0.0](../LICENSE)；非商业用途按许可使用，商业使用需另行授权。项目不是 Qoder / QoderWake 官方产品。
 
 ## 两个仓库的职责
 
@@ -9,7 +9,12 @@
 - 零补丁与补丁工具都可以进入公开快照；是否公开取决于验证与脱敏，不按技术路线划分公私版本。
 - 服务器部署是第三个独立环节。源码已提交、PR 已合并或 Release 已发布，都不能证明运行进程已更新或真实业务已验收。
 
-## 0.12.4 当前发布基线
+## 0.12.7 当前发布基线
+
+- [`v0.12.7`](https://github.com/BlueSkyXN/qoderwake-panel/tree/v0.12.7) 对应 `b0c96dfbaa2f9edf21862fadb02fe7eb44f2a069`；[Release](https://github.com/BlueSkyXN/qoderwake-panel/releases/tag/v0.12.7) 于 2026-10-17 发布。
+- 已合并 [PR #7](https://github.com/BlueSkyXN/qoderwake-panel/pull/7)、[PR #8](https://github.com/BlueSkyXN/qoderwake-panel/pull/8)、[PR #9](https://github.com/BlueSkyXN/qoderwake-panel/pull/9)：管理员记忆页、长历史文档预览、实际版本显示及可选 Linux Provider 启动兼容工具。
+
+## 0.12.4 历史发布基线
 
 - [`v0.12.4`](https://github.com/BlueSkyXN/qoderwake-panel/tree/v0.12.4) 固定对应 `6a664df`；[Release](https://github.com/BlueSkyXN/qoderwake-panel/releases/tag/v0.12.4) 提供 tar.gz、zip 与 SHA256SUMS，下载后哈希核对一致，tar.gz 73 个文件。
 - 启动、重启和页面加载不再计算受管文件哈希；内容哈希只在增强管理页按需、后台执行。生产面板已切换到 0.12.4。
@@ -74,7 +79,7 @@ Python 是运行时依赖，Node 仅用于开发期语法和 JavaScript 回归�
 
 `check-release.sh` 只检查，不复制、不提交、不推送。门禁通过不是安全认证；维护者仍须检查新增文件、差异及包内文件清单。令牌、真实配置、数据库、日志、私钥、恢复点、运行 state、生成物和测试缓存不得进入公开候选。私有目录中的既有缓存无需为发布而删除，候选应通过手工选择隔离。
 
-## 运行态与恢复边界
+## 0.12.2 部署恢复记录（2026-10-06）
 
 2026-10-06 部署与最终复验只证明 Panel 单独升级至 0.12.2：19/19 运行文件哈希匹配，精确受管身份、端口、健康、权限与数据库检查通过。既有 daemon、旧网关、Provider 配置、官方认证、访问令牌和公网/HTTP 绑定保持不变。本次核验 49 个备份文件及权限，专用回滚入口已通过隔离演练，但未执行生产回滚。后续状态仍需实时核对，不能永久沿用此快照。
 
