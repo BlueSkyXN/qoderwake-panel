@@ -1,0 +1,322 @@
+/* React 工作区复用现有主题，在组件边界内处理表单和对话框。 */
+#root {
+  min-height: 100vh;
+}
+fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 18px;
+  min-width: 0;
+}
+.field input:not([type='checkbox']),
+.field textarea,
+.field select {
+  width: 100%;
+}
+.section-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.section-heading h2 {
+  margin: 0;
+}
+.react-nav-group {
+  margin-bottom: 20px;
+}
+.react-nav-group h2 {
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  margin: 8px 10px;
+  color: var(--secondary);
+}
+.react-nav-group .nav-item {
+  display: flex;
+  text-decoration: none;
+}
+.sidebar .brand {
+  text-decoration: none;
+  display: flex;
+}
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--mask);
+  z-index: 100;
+}
+.dialog-content {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 101;
+  max-width: calc(100vw - 32px);
+  width: 480px;
+  padding: 26px;
+  background: var(--container);
+  border: 1px solid var(--border2);
+  border-radius: 12px;
+  box-shadow: 0 24px 80px #0003;
+}
+.dialog-content h2 {
+  font-size: 18px;
+}
+.dialog-content p {
+  line-height: 1.7;
+}
+.toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 12px 20px;
+  max-width: calc(100vw - 32px);
+  background: var(--text);
+  color: var(--container);
+  border-radius: 8px;
+  z-index: 120;
+}
+.error-notice p {
+  margin: 0 0 6px;
+}
+.error-notice {
+  border-left: 3px solid var(--danger);
+  margin: 14px 0;
+}
+.error-notice code {
+  overflow-wrap: anywhere;
+}
+.skill-stage {
+  padding: 24px;
+  min-width: 0;
+}
+.skill-content {
+  min-height: 410px;
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: 14px;
+}
+.skill-editor-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+.skill-editor-heading h2,
+.skill-editor-heading p {
+  margin: 0;
+}
+.segmented {
+  display: flex;
+  gap: 6px;
+  margin: 18px 0;
+  flex-wrap: wrap;
+}
+.segmented button[aria-pressed='true'] {
+  background: var(--primary-bg);
+  border-color: var(--action);
+  color: var(--action);
+}
+.editor-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--secondary);
+  gap: 12px;
+}
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--tertiary);
+}
+.status-dot.connected {
+  background: var(--success);
+}
+.facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px 28px;
+}
+.facts dt {
+  color: var(--secondary);
+}
+.facts dd {
+  margin: 0;
+}
+@media (max-width: 800px) {
+  .skill-stage {
+    padding: 16px;
+  }
+  .skill-editor-heading {
+    flex-wrap: wrap;
+  }
+  .workspace-bar {
+    padding: 12px 16px;
+  }
+  .page-body {
+    padding: 22px 16px;
+  }
+  .role-label {
+    display: none;
+  }
+}
+
+.file-button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  padding: 5px 12px;
+  margin: 0;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 400;
+}
+.file-button:focus-within {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+}
+.native-field > input,
+.native-field > select,
+.native-field > textarea {
+  width: 100%;
+}
+.dialog-content {
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+}
+.deletion-dialog {
+  width: 720px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.dialog-scroll {
+  min-height: 0;
+  overflow-y: auto;
+}
+.deletion-dialog h2,
+.deletion-dialog > p,
+.deletion-dialog .dialog-actions {
+  flex-shrink: 0;
+}
+.deletion-dialog td {
+  padding-top: 9px;
+  padding-bottom: 9px;
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 24px;
+  flex-wrap: wrap;
+}
+.deletion-recovery {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.break-text {
+  overflow-wrap: anywhere;
+}
+.inline-action {
+  display: inline-block;
+}
+.memory-item {
+  border-bottom: 1px solid var(--border);
+  padding: 14px 0;
+}
+.memory-item:last-child {
+  border-bottom: 0;
+}
+.memory-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 520px;
+  overflow: auto;
+  line-height: 1.8;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.message-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.chat-layout .sessions {
+  overflow: auto;
+}
+.composer .field {
+  flex: 1;
+  margin: 0;
+}
+.composer .field > span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+.chat-cost {
+  padding: 0 20px 12px;
+  margin: 0;
+}
+.chat-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.pagination {
+  margin-top: 18px;
+}
+.file-controls {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 8px 0 16px;
+}
+.usage-metric {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.usage-metric span {
+  min-width: 3ch;
+  font-variant-numeric: tabular-nums;
+}
+.usage-metric progress {
+  width: 160px;
+  accent-color: var(--action);
+}
+.runtime-fields {
+  border: 0;
+  padding: 0;
+  margin: 1rem 0 0;
+  min-width: 0;
+}
+.maintenance-banner a {
+  margin-left: 1rem;
+}
+
+.model-json {
+  min-height: 430px;
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.6;
+}

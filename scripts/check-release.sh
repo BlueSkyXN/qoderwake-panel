@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 set -euo pipefail
-PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/check_release.py"
+PYTHONDONTWRITEBYTECODE=1 python3 "$(dirname "$0")/check_release.py" "$@"

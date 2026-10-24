@@ -6,7 +6,7 @@ import test from 'node:test';
 const source=readFileSync(new URL('../panel/static/panel.js',import.meta.url),'utf8');
 const start=source.indexOf('function deletionStorageKey(');
 const end=source.indexOf('async function loadState(');
-const definition=source.slice(start,end);
+const definition=source.split('\n').find(line=>line.startsWith('function uiStatus('))+'\n'+source.slice(start,end);
 
 function fixture(preview){
   const handlers=new Map(),inputs=[];

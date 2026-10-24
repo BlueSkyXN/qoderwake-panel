@@ -47,6 +47,46 @@ class Opener:
 
 
 class DaemonTransportTests(unittest.TestCase):
+    def test_encrypted_token_is_resolved_before_http_bootstrap(self):
+        self.token.write_text('os-credential-v1:fixture-encrypted-placeholder')
+        opener = Opener(self.session, [self.bootstrap])
+        with patch.object(self.session, '_native_token', return_value='fixture-local-token-value') as native, \
+                patch.object(self.session, '_opener', side_effect=self.opener_factory(opener)):
+            self.session.ensure()
+        native.assert_called_once()
+        self.assertNotIn('os-credential', opener.requests[0].headers['Authorization'])
+
+    def test_native_helper_keeps_credentials_out_of_arguments_and_errors(self):
+        import subprocess
+        self.session.native_cli = '/fixture/qoderwake'
+        secret = 'a'*64
+        result = subprocess.CompletedProcess([], 0, json.dumps({'token':secret}).encode(), b'')
+        with patch.object(transport.subprocess, 'run', return_value=result) as run:
+            self.assertEqual(self.session._native_token('os-credential-v1:fixture'), secret)
+        self.assertNotIn(secret, str(run.call_args.args))
+        self.assertEqual(run.call_args.kwargs['env']['BUN_BE_BUN'], '1')
+        failed = subprocess.CompletedProcess([], 1, secret.encode(), ('unexpected '+secret).encode())
+        with patch.object(transport.subprocess, 'run', return_value=failed):
+            with self.assertRaises(transport.DaemonTransportError) as caught:
+                self.session._native_token('os-credential-v1:fixture')
+        self.assertNotIn(secret, str(caught.exception))
+        self.assertEqual(caught.exception.code, 'daemon_credential_runtime_unavailable')
+
+    def test_unknown_credential_version_and_locked_store_do_not_send_ciphertext(self):
+        import subprocess
+        self.session.native_cli = '/fixture/qoderwake'
+        self.token.write_text('os-credential-v2:fixture-encrypted-placeholder')
+        with patch.object(self.session, '_opener') as network, patch.object(transport.subprocess,'run') as run:
+            with self.assertRaises(transport.DaemonTransportError) as caught:self.session.ensure()
+            self.assertEqual(caught.exception.code,'daemon_credential_format_unsupported')
+            network.assert_not_called();run.assert_not_called()
+        self.token.write_text('os-credential-v1:fixture-encrypted-placeholder')
+        failed=subprocess.CompletedProcess([],1,b'',b'credential_store_unavailable')
+        with patch.object(transport.subprocess,'run',return_value=failed), patch.object(self.session,'_opener') as network:
+            with self.assertRaises(transport.DaemonTransportError) as caught:self.session.ensure()
+            self.assertEqual(caught.exception.code,'daemon_credential_store_unavailable')
+            network.assert_not_called()
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)

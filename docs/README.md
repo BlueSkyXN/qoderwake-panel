@@ -1,5 +1,16 @@
 # 文档
 
+## 0.13 使用入口
+
+- [0.13.0-rc.1 发布说明](releases/0.13.0-rc.1.md)：变化、迁移和当前限制。
+- [部署与回退](deployment.md)：Go 二进制、用户服务、旧数据副本验证和切换。
+- [多人协作](collaboration.md)：人员账号、角色和 Waker 范围。
+- [模型管理](model-management.md)：明文多模型编辑、原生 BYOK 状态和会话模型。
+- [官方操作](cli-operations.md)：完整 CLI 表单、任务及权限。
+- [React/Go 架构](react-go-migration.md)与[接口覆盖](react-go-capabilities.md)。
+
+## 兼容与历史资料
+
 - [Provider 运行兼容](provider-runtime.md)：群聊助理遗漏用户级 Provider 的原因、Linux 启动兼容工具及回滚。
 - [记忆页](memory.md)：分身与工作区记忆的数据来源、初始化和 MCP 验收。
 - [0.12.4 页面加载不再计算文件哈希](development-0124.md)：受管身份只比较路径、设备号和 inode；内容哈希改为增强管理页的按需后台检查。

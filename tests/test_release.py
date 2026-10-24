@@ -11,6 +11,32 @@ spec.loader.exec_module(release)
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_private_path_rule_does_not_reject_user_management_routes(self):
+        route='/api/users/create'
+        private='/'+'Users'+'/person/source'
+        self.assertFalse(any(pattern.search(route) for pattern in release.PATTERNS))
+        self.assertTrue(any(pattern.search(private) for pattern in release.PATTERNS))
+
+    def test_go_patch_source_allowed_but_patch_runtime_data_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            for name in release.REQUIRED:
+                path=root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('fixture')
+            path=root/'internal/patches/patches.go'
+            path.parent.mkdir(parents=True);path.write_text('package patches')
+            self.assertEqual(release.issues(root),[])
+            runtime=root/'internal/patches/current.json';runtime.write_text('{}')
+            self.assertIn((str(runtime.relative_to(root)),'local/generated artifact must not be published'),release.issues(root))
+
+    def test_selected_source_does_not_scan_ignored_build_outputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            for name in release.REQUIRED:
+                path=root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('fixture')
+            path=root/'web/node_modules/example/file';path.parent.mkdir(parents=True);path.write_text('fixture')
+            self.assertEqual(release.issues(root,release.REQUIRED),[])
+            self.assertIn((str(path.relative_to(root)),'local/generated artifact must not be published'),release.issues(root))
+
     def test_runtime_generations_are_never_public_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

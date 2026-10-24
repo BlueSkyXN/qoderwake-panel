@@ -21,15 +21,19 @@ import socket
 import stat
 import tempfile
 import ssl
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit, quote, urlencode
 from panel_security import Security, AccessError, AdmissionController, COOKIE
+from panel_permissions import authorize, capabilities
 from panel_patches import PatchManager
 from provider_config import ProviderSettings, ProviderProbePlans, SettingsConflict, provider_editability, require_revision
 from deletion_preflight import DeletionPreflight
 from daemon_transport import DaemonSession, DaemonTransportError, MAX_BOOTSTRAP_BYTES
 from gateway_policy import validate_cfg, policy_hash
 from log_io import tail_records
+from cli_jobs import Operations, CONTEXT_KEYS
+from cli_files import OperationFiles
 import usage_store
 from gateway_runtime import (
     STATE_VERSION, gateway_port_status, identity_status, load_state,
@@ -48,6 +52,7 @@ import urllib.error
 import uuid
 import http.cookiejar
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import TCPServer
 from pathlib import Path
 
 ROOT = Path(os.environ.get('QW_ROOT') or Path.home() / 'qoderwake-panel')
@@ -56,13 +61,15 @@ DAEMON_BIN = os.environ.get('QW_DAEMON_BIN') or 'qoderwake-cn'
 DAEMON = os.environ.get('QW_DAEMON_URL') or 'http://127.0.0.1:19830'
 PORT = int(os.environ.get('QW_PORT') or 19831)
 BIND = os.environ.get('QW_BIND') or '127.0.0.1'
-VERSION = '0.12.7'
+VERSION = '0.13.0-rc.1'
 ASSETS = Path(__file__).resolve().parent / 'static'
 SECURITY = None
 PATCHES = None
 PROVIDER_SETTINGS = None
 PROVIDER_PROBES = ProviderProbePlans()
 DAEMON_SESSION = None
+NATIVE_OPERATIONS = None
+NATIVE_FILES = None
 ADMISSION = AdmissionController()
 PUBLIC_ORIGIN = os.environ.get('QW_PUBLIC_ORIGIN', '').rstrip('/')
 PLUGIN_WRITES_ENABLED = os.environ.get('QW_EXPERIMENTAL_PLUGIN_WRITES') == '1'
@@ -76,12 +83,112 @@ LOCK = threading.Lock()
 RESOURCE_LOCK = threading.RLock()
 
 
+def native_files():
+    global NATIVE_FILES
+    with LOCK:
+        if NATIVE_FILES is None or NATIVE_FILES.root != ROOT/'native-files':
+            NATIVE_FILES = OperationFiles(ROOT/'native-files')
+    return NATIVE_FILES
+
+
+@contextmanager
+def native_guard(identity, spec, body):
+    if identity.get('user_id'):
+        identity = security().refresh_identity(identity)
+    native_operations().catalog.authorize(identity, spec, body.get('parameters', {}))
+    target = urlsplit(DAEMON)
+    if target.hostname not in ('127.0.0.1', 'localhost', '::1'):
+        raise AccessError(409, 'cli_instance_mismatch')
+    port_file = HOME/'run/daemon.port'
+    if port_file.is_file():
+        if port_file.stat().st_size > 32 or port_file.read_text().strip() != str(target.port):
+            raise AccessError(409, 'cli_instance_mismatch')
+    if spec['effect'] == 'read':
+        yield
+        return
+    lease = ADMISSION.acquire(identity['principal'], True)
+    locked, epoch = False, None
+    try:
+        locked = RESOURCE_LOCK.acquire(blocking=False)
+        if not locked:
+            raise AccessError(409, 'resource_mutation_in_progress')
+        if security().has_unresolved_deletions():
+            raise AccessError(409, 'deletion_operation_unresolved')
+        params = body.get('parameters', {}).get('options', {})
+        wid = params.get('--waker-id')
+        if spec['id'].startswith('waker.update.'):
+            current = waker_revision(waker_detail(safe_id(wid)))
+            if body.get('baseRevision') != current:
+                raise AccessError(409, 'version_conflict')
+        if spec['id'] in ('skill.manage', 'skill.delete', 'skill.self-evolution') and params.get('--skill-id'):
+            skill = safe_id(params['--skill-id'])
+            base = params.get('--base-version-id') or body.get('baseVersionId')
+            creating = spec['id']=='skill.manage' and params.get('--action')=='create'
+            if not creating:
+                if not isinstance(base, str) or not base:
+                    raise AccessError(409, 'version_conflict')
+                if spec['id']=='skill.manage' and params.get('--conversation-id') and not wid:
+                    # Group Skill 的条件写由官方 --base-version-id 契约检查。
+                    opaque_id(params['--conversation-id'])
+                    if params.get('--base-version-id') != base:
+                        raise AccessError(409, 'version_conflict')
+                elif spec['id']=='skill.manage':
+                    try:
+                        require_editable_skill(safe_id(wid), skill, base)
+                    except DaemonConflict:
+                        raise AccessError(409, 'version_conflict') from None
+                else:
+                    # 关闭自演进的技能仍可再次开启或删除，不以编辑开关替代生命周期权限。
+                    current = skill_content(safe_id(wid), skill)
+                    if current['skill'].get('currentVersionId') != base:
+                        raise AccessError(409, 'version_conflict')
+        if spec['id'] in ('stop', 'restart'):
+            epoch = ADMISSION.begin_drain(identity['principal'], '官方 CLI '+spec['id'], lease=lease)
+            ADMISSION.wait_clear(epoch, timeout=30)
+            wait_daemon_idle(timeout=30)
+            ADMISSION.transition(epoch, 'restarting')
+        yield
+    finally:
+        if epoch is not None:
+            ADMISSION.complete(epoch)
+        if locked:
+            RESOURCE_LOCK.release()
+        if not lease.released:
+            lease.release()
+        invalidate_state()
+        invalidate_usage()
+
+
+def native_audit(identity, operation, jid, waker, status):
+    security().audit('', identity, 'native:'+operation, jid,
+                     200 if status=='succeeded' else 202 if status=='unknown' else 502,
+                     status=='succeeded', waker)
+
+
+def native_operations():
+    global NATIVE_OPERATIONS
+    with LOCK:
+        if NATIVE_OPERATIONS is None or NATIVE_OPERATIONS.root != ROOT/'native-operations':
+            NATIVE_OPERATIONS = Operations(ROOT/'native-operations', HOME, DAEMON_BIN,
+                audit=native_audit, guard=native_guard,
+                resolve=lambda identity, values: native_files().resolve(identity, values))
+    return NATIVE_OPERATIONS
+
+
+class PanelHTTPServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # 仅使用实际绑定地址；Mac 在没有反向 DNS 时 getfqdn 可长时间阻塞启动。
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 def load_whitelist():
     for c in [os.environ.get('QW_WHITELIST'), ROOT / 'config/whitelist.json',
               CFG / 'whitelist.json', CFG / 'whitelist.example.json']:
         if c and Path(c).exists():
             try:
-                return {k: v for k, v in json.load(open(c)).items() if re.match(r'^\d+\.\d+\.\d+\.\d+$', k)}
+                with open(c) as stream:
+                    return {k: v for k, v in json.load(stream).items() if re.match(r'^\d+\.\d+\.\d+\.\d+$', k)}
             except Exception:
                 pass
     return {}
@@ -136,10 +243,12 @@ def atomic_json(path, data):
 def console_op():
     global DAEMON_SESSION
     token = Path(os.environ.get('QW_DAEMON_FRONTEND_TOKEN_FILE') or HOME / '.auth/token')
+    credential_service = os.environ.get('QW_DAEMON_CREDENTIAL_SERVICE', 'qoderwake.auth.v1')
     with LOCK:
         if (DAEMON_SESSION is None or DAEMON_SESSION.base_url != DAEMON or
-                DAEMON_SESSION.token_path != token):
-            DAEMON_SESSION = DaemonSession(DAEMON, token)
+                DAEMON_SESSION.token_path != token or DAEMON_SESSION.native_cli != DAEMON_BIN or
+                DAEMON_SESSION.credential_service != credential_service):
+            DAEMON_SESSION = DaemonSession(DAEMON, token, DAEMON_BIN, credential_service)
     DAEMON_SESSION.ensure()
     return DAEMON_SESSION, DAEMON_SESSION.headers()
 
@@ -160,6 +269,8 @@ def api_state():
             raise ValueError('invalid_waker_list')
         with ThreadPoolExecutor(max_workers=4) as pool:
             st['wakers'] = list(pool.map(waker_summary, items))
+    except DaemonRequestError as error:
+        st['error'] = error.code if error.code.startswith('daemon_credential_') else 'daemon_unavailable'
     except Exception:
         st['error'] = 'daemon_unavailable'
     try:
@@ -839,8 +950,34 @@ def waker_detail(wid):
     d = daemon_json('GET', '/api/agents/%s' % safe_id(wid)).get('data')
     if not isinstance(d, dict) or (d.get('agentId') or d.get('id')) != wid:
         raise ValueError('invalid_waker_detail')
-    return {k: d.get(k) for k in ('agentId', 'id', 'name', 'description', 'sessionTimeout', 'skills',
-                                  'systemIdentity', 'revision', 'version', 'updatedAt', 'updated_at')}
+    result = {k: d.get(k) for k in ('agentId', 'id', 'name', 'description', 'sessionTimeout', 'skills',
+                                    'systemIdentity', 'revision', 'version', 'updatedAt', 'updated_at')}
+    result['configRevision'] = waker_revision(result)
+    return result
+
+
+def waker_revision(detail):
+    fields = {'name': detail.get('name'), 'description': detail.get('description'),
+              'skills': sorted([{'skillId': s.get('skillId'), 'enabled': s.get('enabled')}
+                                for s in detail.get('skills') or [] if isinstance(s, dict)],
+                               key=lambda s: str(s['skillId']))}
+    return hashlib.sha256(json.dumps(fields, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def scoped_waker_detail(detail):
+    result = {k: detail.get(k) for k in ('agentId', 'id', 'name', 'description', 'configRevision')}
+    result['skills'] = [{k: s.get(k) for k in ('skillId','name','description','enabled','source','mutableByAgent','pinned','currentVersionId')}
+                        for s in detail.get('skills') or [] if isinstance(s, dict)]
+    return result
+
+
+def observed_revision(read):
+    # 写入已完成时，后续只读失败不能使界面误报写入失败或诱导重试。
+    try:
+        value = read()
+        return value if isinstance(value, str) else ''
+    except Exception:
+        return ''
 
 
 MEMORY_TEXT_LIMIT = 200 * 1024
@@ -1872,8 +2009,14 @@ def cached_state():
     raise AccessError(503, 'state_changed_during_refresh')
 
 
-def panel_state(role):
+def panel_state(role, identity=None):
     d = cached_state()
+    if identity and identity.get('user_id') and role != 'admin':
+        return {'version': VERSION, 'daemon': d.get('daemon'), 'error': d.get('error'), 'models': [], 'providers': [],
+                'wakers': [{k: w.get(k) for k in ('id', 'name', 'preference')}
+                           for w in d.get('wakers', []) if w.get('id') in identity['wakers']],
+                'whoami': None, 'providerRevision': None, 'legacyProviderBackups': None,
+                'pluginWritesEnabled': False, 'whitelist': []}
     d['version'] = VERSION
     if role == 'admin':
         d['providers'], d['providerRevision'] = provider_store().summaries()
@@ -1990,6 +2133,10 @@ CONFIRM_ROUTES = {'/api/provider/delete', '/api/test', '/api/test/saved', '/api/
 SPEND_ROUTES = {'/api/gw', '/api/chat/send', '/api/chat/new', '/api/automation/run'}
 MAINTENANCE_CONTROL_ROUTES = {'/api/maintenance/enter', '/api/maintenance/exit'}
 POST_ROUTES = CONFIRM_ROUTES | SPEND_ROUTES | MAINTENANCE_CONTROL_ROUTES | {'/api/session/read', '/api/patch/plan', '/api/provider', '/api/provider/probe-plan', '/api/deletion/preview', '/api/deletion/status', '/api/deletion/reconcile', '/api/deletion/release', '/api/preference', '/api/backup', '/api/waker', '/api/waker/update'}
+POST_ROUTES |= {'/api/users/create', '/api/users/update', '/api/users/password', '/api/account/password'}
+NATIVE_POST_ROUTES = {'/api/native/execute', '/api/native/cancel', '/api/native/input',
+                      '/api/native/file/create', '/api/native/file/append', '/api/native/file/delete'}
+POST_ROUTES |= NATIVE_POST_ROUTES
 
 
 class H(BaseHTTPRequestHandler):
@@ -2001,6 +2148,9 @@ class H(BaseHTTPRequestHandler):
         self.identity = None
         self.audit_action = None
         self.audit_target = ''
+        self.audit_waker = ''
+        self.audit_before = ''
+        self.audit_after = ''
 
     def out(self, code, body, ctype='application/json; charset=utf-8', headers=None):
         if not isinstance(body, (str, bytes)):
@@ -2012,7 +2162,8 @@ class H(BaseHTTPRequestHandler):
                 ok = ok and json.loads(data).get('ok', True)
             except (ValueError, AttributeError):
                 pass
-            security().audit(self.client_address[0], self.identity, self.audit_action, self.audit_target, code, ok)
+            security().audit(self.client_address[0], self.identity, self.audit_action, self.audit_target, code, ok,
+                             self.audit_waker, self.audit_before, self.audit_after)
             self.audit_action = None
         self.send_response(code)
         self.send_header('Content-Type', ctype)
@@ -2065,18 +2216,23 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         from urllib.parse import parse_qs
         u = urlsplit(self.path)
-        if u.path in ('/', '/static/panel.css', '/static/panel.js', '/static/management.js', '/static/advanced.js'):
+        if u.path in ('/', '/static/panel.css', '/static/workbench.css', '/static/panel.js', '/static/management.js', '/static/advanced.js', '/static/collaboration.js', '/static/native.js'):
             name = 'index.html' if u.path == '/' else Path(u.path).name
-            mime = {'index.html': 'text/html; charset=utf-8', 'panel.css': 'text/css; charset=utf-8', 'panel.js': 'text/javascript; charset=utf-8', 'management.js': 'text/javascript; charset=utf-8', 'advanced.js': 'text/javascript; charset=utf-8'}[name]
+            mime = 'text/html; charset=utf-8' if name=='index.html' else 'text/css; charset=utf-8' if name.endswith('.css') else 'text/javascript; charset=utf-8'
             return self.out(200, (ASSETS / name).read_bytes(), mime)
         if u.path == '/api/health':
             return self.out(200, {'ok': True, 'version': VERSION})
+        if u.path == '/api/auth/mode':
+            return self.out(200, {'mode': 'accounts' if security().accounts_enabled() else 'legacy'})
         try:
             self.check_transport()
             self.identity = security().authenticate(self.headers)
             role = self.identity['role']
             if u.path == '/api/whoami':
                 return self.out(200, {'ok': True, 'level': role, 'csrf': self.identity['csrf'], 'version': VERSION,
+                                      'userId': self.identity.get('user_id'), 'username': self.identity.get('username'),
+                                      'displayName': self.identity.get('displayName'), 'capabilities': capabilities(self.identity),
+                                      'wakers': self.identity.get('wakers', []),
                                       'transportSecure': isinstance(self.connection, ssl.SSLSocket)})
             if role == 'caller':
                 raise AccessError(403, 'caller_route_rejected')
@@ -2084,8 +2240,32 @@ class H(BaseHTTPRequestHandler):
                 raise AccessError(403, 'admin_required')
             q = parse_qs(u.query)
             arg = lambda key: (q.get(key) or [''])[0]
+            if self.identity.get('user_id'):
+                authorize(self.identity, 'GET', u.path, {key: values[0] for key, values in q.items()})
             if u.path == '/api/state':
-                d = panel_state(role)
+                d = panel_state(role, self.identity)
+            elif u.path == '/api/native/catalog':
+                d = native_operations().catalog.listing(self.identity)
+            elif u.path == '/api/native/operation':
+                d = native_operations().detail(self.identity, arg('id'))
+                if role != 'admin':
+                    allowed = native_operations().catalog.policies['scoped'].get(d['id'], [])
+                    d = dict(d, options=[o for o in d['options'] if o['name'] in allowed])
+                d['contextKeys'] = list(CONTEXT_KEYS) if role=='admin' else []
+            elif u.path == '/api/native/jobs':
+                d = {'items':native_operations().list(self.identity)}
+            elif u.path == '/api/native/files':
+                d = {'items':native_files().list(self.identity)}
+            elif u.path == '/api/native/job':
+                d = native_operations().get(self.identity, arg('id'), arg('offset') or 0)
+            elif u.path == '/api/native/file':
+                data, name = native_files().read(self.identity, arg('id'))
+                return self.out(200, data, 'application/octet-stream',
+                    [('Content-Disposition', "attachment; filename*=UTF-8''"+quote(name,safe=''))])
+            elif u.path == '/api/users':
+                if role != 'admin':
+                    raise AccessError(403, 'admin_required')
+                d = {'items': security().users(), 'mode': 'accounts' if security().accounts_enabled() else 'legacy'}
             elif u.path == '/api/usage':
                 d = usage_data()
             elif u.path == '/api/system/status':
@@ -2101,9 +2281,15 @@ class H(BaseHTTPRequestHandler):
                 d = skills_list(arg('waker'))
             elif u.path == '/api/skill/content':
                 d = skill_content(arg('waker'), arg('skill'))
+                if self.identity.get('user_id') and role == 'observer':
+                    d = dict(d, editable=False, readOnlyReason='permission_denied')
             elif u.path == '/api/skill/versions':
+                if self.identity.get('user_id'):
+                    skill_content(arg('waker'), arg('skill'))
                 d = skill_versions(arg('waker'), arg('skill'))
             elif u.path == '/api/skill/diff':
+                if self.identity.get('user_id'):
+                    skill_content(arg('waker'), arg('skill'))
                 d = skill_diff(arg('waker'), arg('skill'), arg('version'))
             elif u.path == '/api/automations':
                 d = automations(arg('page') or 1)
@@ -2135,7 +2321,7 @@ class H(BaseHTTPRequestHandler):
             elif u.path == '/api/backups':
                 d = backups_list()
             elif u.path == '/api/audit':
-                d = security().recent()
+                d = security().recent(self.identity)
             elif u.path == '/api/callers':
                 d = security().callers()
             elif u.path == '/api/chat/sessions':
@@ -2144,6 +2330,8 @@ class H(BaseHTTPRequestHandler):
                 d = chat_messages(arg('session'))
             elif u.path == '/api/waker/detail':
                 d = waker_detail(arg('id'))
+                if self.identity.get('user_id') and role != 'admin':
+                    d = scoped_waker_detail(d)
             elif u.path == '/api/memory':
                 d = memory_data(arg('waker'))
             elif u.path == '/api/net/state':
@@ -2185,14 +2373,21 @@ class H(BaseHTTPRequestHandler):
                     cookies = SimpleCookie()
                     cookies.load(self.headers.get('Cookie', ''))
                     value = cookies['qwtk'].value if 'qwtk' in cookies else None
-                role = security().role_for(value)
-                bucket = ('login-success:' + role if role else
-                          'login-failed:' + self.client_address[0])
-                limit = 30 if role else 10
-                if not security().limit(bucket, limit, 300):
-                    raise AccessError(429, 'login_rate_limited')
-                raw, identity = security().login(value)
-                self.identity = {'role': identity['role'], 'principal': 'login:' + identity['role']}
+                if p == '/api/login' and 'username' in b:
+                    username = b.get('username')
+                    bucket = hashlib.sha256(str(username).lower().encode()).hexdigest()[:32]
+                    if (not security().limit('login-ip:'+self.client_address[0], 30, 300) or
+                            not security().limit('login-user:'+bucket, 20, 300)):
+                        raise AccessError(429, 'login_rate_limited')
+                    raw, identity = security().login_user(username, b.get('password'))
+                    self.identity = identity
+                else:
+                    role = security().role_for(value)
+                    bucket = ('login-success:' + role if role else 'login-failed:' + self.client_address[0])
+                    if not security().limit(bucket, 30 if role else 10, 300):
+                        raise AccessError(429, 'login_rate_limited')
+                    raw, identity = security().login(value)
+                    self.identity = {'role': identity['role'], 'principal': 'login:' + identity['role']}
                 secure = '; Secure' if isinstance(self.connection, ssl.SSLSocket) else ''
                 return self.out(200, {'ok': True, 'level': identity['role'], 'csrf': identity['csrf']}, headers=[
                     ('Set-Cookie', COOKIE + '=' + raw + '; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800' + secure),
@@ -2208,18 +2403,20 @@ class H(BaseHTTPRequestHandler):
             caller = self.identity['role'] == 'caller'
             if caller and p != '/api/gw':
                 raise AccessError(403, 'caller_route_rejected')
-            if self.identity['role'] not in ('admin', 'caller'):
+            if self.identity['role'] not in ('admin', 'caller') and not self.identity.get('user_id'):
                 raise AccessError(403, 'admin_required')
             if p not in POST_ROUTES:
                 raise AccessError(404, 'not_found')
-            if p == '/api/maintenance/exit':
+            b = self.body()
+            if self.identity.get('user_id'):
+                authorize(self.identity, 'POST', p, b)
+            if p == '/api/maintenance/exit' or p in NATIVE_POST_ROUTES:
                 lease = None
             else:
                 lease = ADMISSION.acquire(
                     self.identity['principal'], p in SPEND_ROUTES)
-            if p not in MAINTENANCE_CONTROL_ROUTES and not security().limit('writes:'+self.identity['role'], 120, 60):
+            if p not in MAINTENANCE_CONTROL_ROUTES | {'/api/native/file/append'} and not security().limit('writes:'+self.identity.get('user_id', self.identity['role']), 120, 60):
                 raise AccessError(429, 'rate_limited')
-            b = self.body()
             if p == '/api/deletion/preview':
                 target = b.get('target') or ''
                 pattern = r'[A-Za-z0-9_.-]{1,253}'
@@ -2238,6 +2435,9 @@ class H(BaseHTTPRequestHandler):
                     raise AccessError(409, 'resource_mutation_in_progress')
                 if p in DEPENDENCY_WRITE_ROUTES and security().has_unresolved_deletions():
                     raise AccessError(409, 'deletion_operation_unresolved')
+            if self.identity.get('user_id'):
+                self.identity = security().refresh_identity(self.identity)
+                authorize(self.identity, 'POST', p, b)
             if p in SPEND_ROUTES:
                 if not security().limit('spend-ip:'+self.client_address[0]) or not security().limit('spend-role:'+self.identity['role']):
                     raise AccessError(429, 'rate_limited')
@@ -2247,7 +2447,42 @@ class H(BaseHTTPRequestHandler):
                 if not security().limit('spend-caller:' + self.identity['caller_id']):
                     raise AccessError(429, 'rate_limited')
                 security().consume_caller(self.identity, wid)
-            if p == '/api/maintenance/enter':
+            if p == '/api/native/execute':
+                if b.get('operation') in native_operations().catalog.policies.get('spend', []):
+                    if not security().limit('spend-ip:'+self.client_address[0]) or not security().limit('spend-role:'+self.identity['role']):
+                        raise AccessError(429,'rate_limited')
+                result = {'ok':True, **native_operations().submit(self.identity, b, self.headers.get('Idempotency-Key',''))}
+                self.audit_action = 'native:accepted'
+                self.audit_target = result['id']
+                self.audit_waker = result.get('waker','')
+                return self.out(202, result)
+            elif p in ('/api/native/cancel','/api/native/input'):
+                result = native_operations().control(self.identity, b.get('id'), p.rsplit('/',1)[-1], b.get('input',''))
+            elif p == '/api/native/file/create':
+                if type(b.get('output',False)) is not bool:
+                    raise ValueError('invalid_cli_file')
+                result = {'ok':True, **native_files().create(self.identity,b.get('name'),b.get('output',False))}
+            elif p == '/api/native/file/append':
+                result = native_files().append(self.identity,b.get('id'),b.get('offset'),b.get('data'))
+                self.audit_action = None
+            elif p == '/api/native/file/delete':
+                result = native_files().delete(self.identity,b.get('id'))
+            elif p == '/api/users/create':
+                result = {'ok': True, 'user': security().create_user(b.get('username'), b.get('displayName'),
+                          b.get('password'), b.get('role'), b.get('wakers', []))}
+                self.audit_target = result['user']['id']
+            elif p == '/api/users/update':
+                result = {'ok': True, 'user': security().update_user(b.get('id'), b.get('displayName'),
+                          b.get('role'), b.get('wakers', []), b.get('enabled'), b.get('revision'))}
+            elif p == '/api/users/password':
+                if type(b.get('revision')) is not int:
+                    raise ValueError('invalid_user_update')
+                security().reset_password(b.get('id'), b.get('password'), b['revision'])
+                result = {'ok': True}
+            elif p == '/api/account/password':
+                security().change_password(self.identity, b.get('currentPassword'), b.get('password'))
+                result = {'ok': True}
+            elif p == '/api/maintenance/enter':
                 reason = text(b.get('reason', '管理员手动维护'), 200)
                 ttl = b.get('ttl', 300)
                 if type(ttl) is not int:
@@ -2331,18 +2566,25 @@ class H(BaseHTTPRequestHandler):
                 daemon_json('DELETE','/api/sessions/'+quote(sid, safe='')+('?force=true' if force else ''));result={'ok':True}
             elif p == '/api/skill/update':
                 wid=safe_id(b.get('wakerId'));skill=safe_id(b.get('skillId'));base=text(b.get('baseVersionId'),200)
+                self.audit_waker, self.audit_target, self.audit_before = wid, wid+'/'+skill, base
                 require_editable_skill(wid, skill, base)
                 content = b.get('content')
                 if not isinstance(content, str) or len(content.encode()) > 60000:
                     raise ValueError('invalid_skill_content')
                 daemon_json('PUT','/api/agents/%s/skills/%s/content'%(wid,skill),{'content':content,'baseVersionId':base});result={'ok':True}
+                self.audit_after = observed_revision(lambda: skill_content(wid, skill)['skill']['currentVersionId'])
+                result['revision'] = self.audit_after or None
             elif p == '/api/skill/rollback':
                 wid=safe_id(b.get('wakerId'));skill=safe_id(b.get('skillId'))
-                require_editable_skill(wid, skill)
+                base = text(b.get('baseVersionId'), 200)
+                self.audit_waker, self.audit_target, self.audit_before = wid, wid+'/'+skill, base
+                require_editable_skill(wid, skill, base)
                 version = text(b.get('versionId'), 200)
                 if not any(row.get('versionId') == version for row in skill_versions(wid, skill)):
                     raise ValueError('skill_version_not_found')
                 daemon_json('POST','/api/agents/%s/skills/%s/rollback'%(wid,skill),{'versionId':version,'reason':text(b.get('reason'),500)});result={'ok':True}
+                self.audit_after = observed_revision(lambda: skill_content(wid, skill)['skill']['currentVersionId'])
+                result['revision'] = self.audit_after or None
             elif p == '/api/automation/toggle':
                 if not isinstance(b.get('enabled'), bool):
                     raise ValueError('invalid_enabled')
@@ -2413,6 +2655,11 @@ class H(BaseHTTPRequestHandler):
                     result['preferenceApplied'] = set_preference(wid, text(b['model'], 300))[0]
             elif p == '/api/waker/update':
                 wid = safe_id(b.get('id'))
+                base = require_revision(b.get('baseRevision'))
+                self.audit_waker, self.audit_before = wid, base
+                current = waker_detail(wid)
+                if not hmac.compare_digest(waker_revision(current), base):
+                    raise DaemonConflict('waker_version_changed')
                 body = {'name': text(b.get('name'), 100), 'description': text(b.get('description', ''), 4000, True)}
                 skills = b.get('skills', [])
                 if not isinstance(skills, list) or len(skills) > 200:
@@ -2420,11 +2667,17 @@ class H(BaseHTTPRequestHandler):
                 body['skills'] = [{'skillId': safe_id(x.get('skillId')), 'enabled': x['enabled']} for x in skills if isinstance(x, dict) and isinstance(x.get('enabled'), bool)]
                 if len(body['skills']) != len(skills):
                     raise ValueError('invalid_skills')
+                allowed_skills = {s.get('skillId') for s in current.get('skills') or [] if isinstance(s, dict)}
+                if (len({s['skillId'] for s in body['skills']}) != len(body['skills']) or
+                        any(s['skillId'] not in allowed_skills for s in body['skills'])):
+                    raise ValueError('invalid_skills')
                 with RESOURCE_LOCK:
                     if security().unresolved_deletion('waker', wid):
                         raise AccessError(409, 'deletion_operation_unresolved')
                     daemon_json('PUT', '/api/agents/'+wid, body)
                 result = {'ok': True}
+                self.audit_after = observed_revision(lambda: waker_revision(waker_detail(wid)))
+                result['revision'] = self.audit_after or None
             elif p == '/api/waker/delete':
                 result = execute_deletion(
                     dict(b, kind='waker', target=b.get('id')),
@@ -2474,9 +2727,13 @@ class H(BaseHTTPRequestHandler):
 
 
 if __name__ == '__main__':
+    import signal
+    def stop_panel(signum, frame):
+        raise KeyboardInterrupt()
+    signal.signal(signal.SIGTERM, stop_panel)
     init_db()
     security()
-    server = ThreadingHTTPServer((BIND, PORT), H)
+    server = PanelHTTPServer((BIND, PORT), H)
     cert, key = os.environ.get('QW_TLS_CERT'), os.environ.get('QW_TLS_KEY')
     if bool(cert) != bool(key):
         raise RuntimeError('Both TLS certificate and key are required')
@@ -2487,4 +2744,9 @@ if __name__ == '__main__':
         server.socket = context.wrap_socket(server.socket, server_side=True)
     threading.Thread(target=usage_background, name='usage-scanner', daemon=True).start()
     print('QoderWake Panel %s listening on %s:%d (%s)' % (VERSION, BIND, PORT, 'HTTPS' if cert else 'HTTP'), flush=True)
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        if NATIVE_OPERATIONS is not None:
+            NATIVE_OPERATIONS.close()
+        server.server_close()
