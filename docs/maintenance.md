@@ -1,6 +1,6 @@
 # 维护、快照与 PR 约定
 
-更新日期 **2026-10-18**。当前公开发布基线为 **0.12.7**，后续源码修复记入 [Changelog 的未发布部分](../CHANGELOG.md)。本项目公开源码采用 [PolyForm Noncommercial 1.0.0](../LICENSE)；非商业用途按许可使用，商业使用需另行授权。项目不是 Qoder / QoderWake 官方产品。
+更新日期 **2026-10-24**。稳定基线为 **0.12.7**；**0.13.0-rc.1** 为 Go/React 预发布，变化与限制见 [Changelog](../CHANGELOG.md)。本项目公开源码采用 [PolyForm Noncommercial 1.0.0](../LICENSE)；非商业用途按许可使用，商业使用需另行授权。项目不是 Qoder / QoderWake 官方产品。
 
 ## 两个仓库的职责
 
@@ -61,23 +61,29 @@
 5. 有冲突时先读取双方修改并保留各自意图；修复后重跑受影响的测试。不得以覆盖一方文件、强推 `main` 或绕过权限来消除冲突。
 6. 合并后核对远端 `main` 包含提交、PR 为 merged。提交、推送与合并分别报告；PR 合并不自动触发服务器升级或发布新标签。
 
-## 发布前门禁
+## 发布前检查与流水线
 
-在独立、干净的公开候选目录执行以下命令：
+公开仓 PR 和主线提交运行 `.github/workflows/ci.yml`。macOS arm64 与 Linux amd64 分别安装锁定依赖、构建前端、运行 Go race、Python 兼容和 JavaScript 测试、检查源码快照，再构建本平台二进制并打包。运行中的 Wake、凭据库或 Provider 不作为 CI 输入。
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
-node --check panel/static/panel.js
-node --check panel/static/management.js
-node --check panel/static/advanced.js
+bash scripts/build-go.sh
+go test -race ./internal/... ./cmd/...
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests
 node --test tests/test_*.mjs
-bash scripts/check-release.sh
+npm --prefix web test
+bash scripts/check-release.sh --tracked
 git diff --check
 ```
 
-Python 是运行时依赖，Node 仅用于开发期语法和 JavaScript 回归测试。运维 shell 变更另跑 `bash -n`。涉及 Linux 精确进程或网关切换时，还需在临时 HOME、目录和回环端口做 Linux 隔离验证；macOS 跳过真进程测试不代表该项通过。
+`--tracked` 检查 Git 源文件，排除忽略的本地依赖和构建输出；对导出的干净目录使用 `--root /path/to/snapshot` 检查全部文件。Go `internal/patches/*.go` 是源码，其他补丁运行文件仍被拒绝。完整快照还需检查敏感信息和包内清单。
 
-`check-release.sh` 只检查，不复制、不提交、不推送。门禁通过不是安全认证；维护者仍须检查新增文件、差异及包内文件清单。令牌、真实配置、数据库、日志、私钥、恢复点、运行 state、生成物和测试缓存不得进入公开候选。私有目录中的既有缓存无需为发布而删除，候选应通过手工选择隔离。
+1. 公开候选仅包含审查过的源码、通用示例、测试及文档。私有研究仓的 Git 历史、现场记录、凭据、配置、数据库和运行数据不导入公开仓。
+2. 更新 Go、前端包和保留的 Python 对照版本，填写对应 `docs/releases/<version>.md`，通过 PR 的全部检查后合并。
+3. 在合并提交创建与程序版本一致的新 `v*` 标签。`.github/workflows/release.yml` 重新验证该标签、构建两平台包和源码包，并生成 `RELEASE-MANIFEST.json` 与 `SHA256SUMS`。
+4. 发布任务仅有上传 Release 所需的 `contents: write`。带版本后缀的标签发布为 prerelease，保留稳定版的 Latest 标记。流水线不包含目标机器部署和 Secrets 修改。
+5. 发布后回读标签、提交、CI、附件，重新下载并核对校验和与源码包。若已有同名 Release，上传流程拒绝覆盖，先查明实际状态。
+
+二进制包包括项目许可、文档、第三方许可和 `BUILD-INFO.json`。打包器核验 Go 构建信息中的平台、源码提交和干净状态；源码包来自同一提交。需要重新发布修复时使用新版本，不移动旧标签或替换旧附件。
 
 ## 0.12.2 部署恢复记录（2026-10-06）
 

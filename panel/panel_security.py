@@ -11,17 +11,12 @@ import time
 from contextlib import contextmanager
 from http.cookies import SimpleCookie
 from pathlib import Path
+from panel_accounts import AccountsMixin, AccessError
 
 COOKIE = 'qwp_session'
 IDLE_TTL = 12 * 3600
 MAX_TTL = 7 * 86400
 SEEN_INTERVAL = 60
-
-
-class AccessError(Exception):
-    def __init__(self, status, code):
-        self.status, self.code = status, code
-        super().__init__(code)
 
 
 class AdmissionLease:
@@ -191,7 +186,7 @@ def digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-class Security:
+class Security(AccountsMixin):
     def __init__(self, root):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -228,6 +223,7 @@ class Security:
                     status TEXT NOT NULL, result TEXT NOT NULL, created REAL NOT NULL,
                     updated REAL NOT NULL, PRIMARY KEY(principal, idempotency_key));
             ''')
+            self.init_accounts(con)
 
     @contextmanager
     def db(self):
@@ -239,6 +235,8 @@ class Security:
             con.close()
 
     def role_for(self, value):
+        if self.accounts_enabled():
+            return None
         if not isinstance(value, str) or not value or len(value) > 256:
             return None
         hashed = digest(value)
@@ -258,7 +256,7 @@ class Security:
         session, csrf, now = secrets.token_urlsafe(32), secrets.token_urlsafe(32), time.time()
         with self.db() as con:
             con.execute('DELETE FROM sessions WHERE seen < ? OR created < ?', (now-IDLE_TTL, now-MAX_TTL))
-            con.execute('INSERT INTO sessions VALUES(?,?,?,?,?,?)',
+            con.execute('INSERT INTO sessions(id,role,credential,csrf,created,seen) VALUES(?,?,?,?,?,?)',
                         (digest(session), role, self.credential(role), csrf, now, now))
         return session, {'role': role, 'csrf': csrf}
 
@@ -287,12 +285,16 @@ class Security:
             raise AccessError(401, 'authentication_required')
         sid, now = digest(raw), time.time()
         with self.db() as con:
-            row = con.execute('SELECT role,credential,csrf,created,seen FROM sessions WHERE id=?', (sid,)).fetchone()
-            if not row or now-row[3] > MAX_TTL or now-row[4] > IDLE_TTL or not hmac.compare_digest(row[1], self.credential(row[0])):
+            row = con.execute('SELECT role,credential,csrf,created,seen,user_id FROM sessions WHERE id=?', (sid,)).fetchone()
+            if (not row or now-row[3] > MAX_TTL or now-row[4] > IDLE_TTL or
+                    (not row[5] and (self.accounts_enabled() or not hmac.compare_digest(row[1], self.credential(row[0]))))):
                 con.execute('DELETE FROM sessions WHERE id=?', (sid,))
                 raise AccessError(401, 'session_expired')
             if now - row[4] >= SEEN_INTERVAL:
                 con.execute('UPDATE sessions SET seen=? WHERE id=? AND seen<=?', (now, sid, now - SEEN_INTERVAL))
+        if row[5]:
+            identity = self.user_identity(row[5], int(row[1]))
+            return dict(identity, source='cookie', csrf=row[2], sid=sid)
         return {'role': row[0], 'principal': 'session:' + sid[:12], 'source': 'cookie', 'csrf': row[2], 'sid': sid}
 
     def create_caller(self, name, wakers, quota, days):
@@ -504,16 +506,29 @@ class Security:
             raise ValueError('deletion_operation_not_pending')
         return public
 
-    def audit(self, ip, identity, action, target, status, ok):
+    def audit(self, ip, identity, action, target, status, ok, resource_waker='', before_revision='', after_revision=''):
         identity = identity or {}
         with self.db() as con:
-            con.execute('INSERT INTO audit VALUES(?,?,?,?,?,?,?,?)', (
+            con.execute('INSERT INTO audit(ts,ip,principal,role,action,target,status,ok,resource_waker,before_revision,after_revision) VALUES(?,?,?,?,?,?,?,?,?,?,?)', (
                 time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), ip[:64],
                 identity.get('principal', 'anonymous'), identity.get('role', 'anonymous'),
-                action[:64], target[:128], status, int(ok)))
+                action[:64], target[:128], status, int(ok), resource_waker[:100], before_revision[:200], after_revision[:200]))
             con.execute('DELETE FROM audit WHERE rowid < (SELECT MAX(rowid)-10000 FROM audit)')
 
-    def recent(self):
+    def recent(self, identity=None):
+        where, args = '', []
+        if identity and identity.get('user_id') and identity['role'] != 'admin':
+            wakers = identity.get('wakers', [])
+            if not wakers:
+                return []
+            where = ' WHERE a.resource_waker IN ('+','.join('?' for _ in wakers)+')'
+            args = wakers
         with self.db() as con:
-            rows = con.execute('SELECT ts,ip,principal,role,action,target,status,ok FROM audit ORDER BY rowid DESC LIMIT 50').fetchall()
-        return [dict(zip(['ts','ip','principal','role','action','target','status','ok'], r)) for r in rows]
+            rows = con.execute('''SELECT a.ts,a.ip,a.principal,a.role,a.action,a.target,a.status,a.ok,
+                a.resource_waker,a.before_revision,a.after_revision,u.display_name
+                FROM audit a LEFT JOIN users u ON a.principal='user:'||u.id'''+where+' ORDER BY a.rowid DESC LIMIT 50', args).fetchall()
+        result = [dict(zip(['ts','ip','principal','role','action','target','status','ok','wakerId','beforeRevision','afterRevision','displayName'], r)) for r in rows]
+        if identity and identity['role'] != 'admin':
+            for row in result:
+                row.pop('ip', None)
+        return result

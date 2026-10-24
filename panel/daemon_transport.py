@@ -1,6 +1,8 @@
 """Reusable authenticated daemon frontend session using the official CLI contract."""
 import http.cookiejar
 import os
+import json
+import subprocess
 from pathlib import Path
 import stat
 import threading
@@ -51,7 +53,7 @@ def read_private_token(path):
 
 
 class DaemonSession:
-    def __init__(self, base_url, token_path):
+    def __init__(self, base_url, token_path, native_cli=None, credential_service='qoderwake.auth.v1'):
         self.base_url = base_url.rstrip('/')
         parsed = urlsplit(self.base_url)
         if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password:
@@ -59,6 +61,8 @@ class DaemonSession:
         self.origin = (parsed.scheme, parsed.hostname.lower(),
                        parsed.port or (443 if parsed.scheme == 'https' else 80))
         self.token_path = Path(token_path)
+        self.native_cli = native_cli
+        self.credential_service = credential_service
         self.lock = threading.Lock()
         self.jar = http.cookiejar.CookieJar()
         self.ready = False
@@ -92,6 +96,8 @@ class DaemonSession:
             if self.ready and self._has_cookie():
                 return self.generation
             token = read_private_token(self.token_path)
+            if token.startswith('os-credential-'):
+                token = self._native_token(token)
             headers = {
                 'content-type': 'application/json',
                 'Authorization': 'Bearer ' + token,
@@ -123,6 +129,33 @@ class DaemonSession:
             self.ready = True
             self.generation += 1
             return self.generation
+
+    def _native_token(self, stored):
+        if not stored.startswith('os-credential-v1:'):
+            raise DaemonTransportError(503, 'daemon_credential_format_unsupported')
+        if not self.native_cli:
+            raise DaemonTransportError(503, 'daemon_credential_runtime_unavailable')
+        helper = Path(__file__).with_name('native-credential.mjs')
+        try:
+            result = subprocess.run([str(self.native_cli), str(helper), str(self.token_path), self.credential_service],
+                                    env=dict(os.environ, BUN_BE_BUN='1'), capture_output=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            raise DaemonTransportError(503, 'daemon_credential_runtime_unavailable') from None
+        if result.returncode:
+            code = result.stderr.decode('ascii', errors='ignore').strip()
+            allowed = {'credential_runtime_unavailable','credential_file_unavailable',
+                       'credential_format_unsupported','credential_store_unavailable','credential_decryption_failed'}
+            raise DaemonTransportError(503, 'daemon_'+code if code in allowed else 'daemon_credential_runtime_unavailable')
+        if len(result.stdout) > 8192:
+            raise DaemonTransportError(503, 'daemon_credential_decryption_failed')
+        try:
+            token = json.loads(result.stdout)['token']
+            if (not isinstance(token, str) or not 16 <= len(token) <= 4096 or
+                    any(ord(c) < 33 or ord(c) > 126 for c in token)):
+                raise ValueError()
+            return token
+        except (ValueError, KeyError, TypeError):
+            raise DaemonTransportError(503, 'daemon_credential_decryption_failed') from None
 
     def invalidate(self, generation):
         with self.lock:

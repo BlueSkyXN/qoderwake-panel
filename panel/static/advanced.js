@@ -1,7 +1,7 @@
 'use strict';
 nav.push(['operations','运行管理','系统状态、自动化与 IM 配对审批','M4 4h14v16H4zM8 8h6M8 12h6M8 16h6']);
 nav.push(['sessions','会话管理','分页筛选、产物与受控删除','M3 5h16v12H8l-5 4z']);
-nav.push(['skills','技能编辑','正文版本与冲突保护','M5 3h12v18H5zM8 7h6M8 11h6']);
+nav.push(['skills','技能编辑','正文与版本历史','M5 3h12v18H5zM8 7h6M8 11h6']);
 const pageSize=20;
 let managedSessions=[],managedVersions=[],managedWaker='',managedOrigin='',sessionOffset=0;
 let automationPage=1,pairingOffset=0,runPage=1,runTrigger='',skillWaker='',skillRows=[],loadedSkill=null,skillRequest=0;
@@ -36,7 +36,7 @@ async function loadRuns(){
   const data=await api('automation/runs?'+query({id,page}));
   if(g!==generation||view!=='operations'||id!==runTrigger||page!==runPage)return;
   const rows=data.items||[],box=E('automation-runs');box.hidden=false;
-  box.innerHTML=`<h2>运行历史</h2>${rows.length?table(['开始','状态','会话'],rows.map(r=>`<tr><td>${esc(r.startedAt)}</td><td>${esc(r.status)}</td><td class="mono">${esc(r.sessionId)}</td></tr>`)):empty()}${pager('run',page,nextPage(data,page))}`;
+  box.innerHTML=`<h2>运行历史</h2>${rows.length?table(['开始','状态','会话'],rows.map(r=>`<tr><td>${esc(r.startedAt)}</td><td>${uiStatus('activity',r.status)}</td><td class="mono">${esc(r.sessionId)}</td></tr>`)):empty()}${pager('run',page,nextPage(data,page))}`;
   bindActions();box.scrollIntoView({block:'nearest'});
 }
 actions.runPrev=async()=>{runPage=Math.max(1,runPage-1);await loadRuns()};
@@ -59,45 +59,94 @@ renderers.sessions=async()=>{
   actions.sessionPrev=async()=>{sessionOffset=Math.max(0,sessionOffset-pageSize);await route('sessions')};
   actions.sessionNext=async()=>{sessionOffset+=pageSize;await route('sessions')};
   return card('筛选',`<div class="row"><label for="session-waker">机器人</label><select id="session-waker">${options(state.wakers,managedWaker)}</select><label for="session-origin">来源</label><select id="session-origin"><option value=""${managedOrigin===''?' selected':''}>全部</option><option value="chat"${managedOrigin==='chat'?' selected':''}>Chat</option><option value="at_waker"${managedOrigin==='at_waker'?' selected':''}>@Waker</option></select></div>`)+
-    card('高级会话列表',(managedSessions.length?table(['标题 / 来源','状态','未读','操作'],managedSessions.map((s,i)=>`<tr><td>${esc(s.title||s.session_id)}<br><span class="mono">${esc(s.origin||'')}</span></td><td>${esc(s.session_status||s.connection_status)}</td><td>${s.unread?'是':'否'}</td><td class="actions">${btn('sessionArtifacts','产物',i)}${btn('sessionRead','标已读',i)}${btn('sessionDelete','删除',i,'class="danger"')}</td></tr>`)):empty())+pager('session',sessionOffset/pageSize+1,!!data.has_more))+`<section id="artifact-list" class="card" hidden></section>`;
+    card('高级会话列表',(managedSessions.length?table(['标题 / 来源','状态','未读','操作'],managedSessions.map((s,i)=>`<tr><td>${esc(s.title||s.session_id)}<br><span class="mono">${esc(s.origin||'')}</span></td><td>${uiStatus('activity',s.session_status||s.connection_status)}</td><td>${s.unread?'是':'否'}</td><td class="actions">${btn('sessionArtifacts','产物',i)}${btn('sessionRead','标已读',i)}${btn('sessionDelete','删除',i,'class="danger"')}</td></tr>`)):empty())+pager('session',sessionOffset/pageSize+1,!!data.has_more))+`<section id="artifact-list" class="card" hidden></section>`;
 };
 afterRender.sessions=()=>{
   E('session-waker').addEventListener('change',async()=>{managedWaker=E('session-waker').value;sessionOffset=0;await route('sessions')});
   E('session-origin').addEventListener('change',async()=>{managedOrigin=E('session-origin').value;sessionOffset=0;await route('sessions')});
 };
 
+let selectedSkill='',skillPane='content';
+function skillDirty(){return !!(loadedSkill?.editable&&E('skill-content')&&E('skill-content').value!==loadedSkill.content)}
+async function skillCanLeave(){return !skillDirty()||await confirmAction('技能正文有未保存的修改。放弃这份草稿并离开？')}
+function skillEditorState(){
+  const dirty=skillDirty(),content=E('skill-content');
+  if(E('skill-save-status'))E('skill-save-status').textContent=loadedSkill?.editable?(dirty?'未保存修改':'已保存'):'只读';
+  if(E('skill-save'))E('skill-save').disabled=!loadedSkill?.editable||!dirty;
+  if(E('skill-content-meta'))E('skill-content-meta').textContent=content?`${content.value.split('\n').length} 行 · ${content.value.length.toLocaleString()} 字符`:'';
+}
+function skillShowPane(name){
+  skillPane=name;
+  ['content','history'].forEach(id=>{E('skill-pane-'+id).hidden=id!==name;E('skill-tab-'+id).setAttribute('aria-pressed',String(id===name))});
+}
+function skillList(){
+  const q=(E('skill-search')?.value||'').toLowerCase();
+  const rows=skillRows.filter(s=>[s.name,s.skillId].join(' ').toLowerCase().includes(q));
+  E('skill-items').innerHTML=rows.length?rows.map(s=>`<button class="skill-item" type="button" data-skill="${esc(s.skillId)}" aria-current="${String(s.skillId===selectedSkill)}"><strong>${esc(s.name||s.skillId)}</strong><small>${s.pinned||s.mutableByAgent!==true?'只读技能':can('skill.write')?'可编辑':'可查看'}${s.currentVersionId?' · '+esc(s.currentVersionId):''}</small></button>`).join(''):empty('没有匹配的技能');
+  E('skill-items').querySelectorAll('[data-skill]').forEach(button=>button.addEventListener('click',async()=>{
+    if(button.dataset.skill===selectedSkill&&loadedSkill)return;
+    try{if(!await skillCanLeave())return;selectedSkill=button.dataset.skill;E('skill-id').value=selectedSkill;skillList();await actions.loadSkill()}catch(error){toast(error)}
+  }));
+}
 renderers.skills=async()=>{
   await loadState();loadedSkill=null;skillRequest++;
   if(!state.wakers.some(w=>w.id===skillWaker))skillWaker=state.wakers[0]?.id||'';
   skillRows=skillWaker?await api('skills?'+query({waker:skillWaker})):[];
-  return card('Skill 正文编辑',`<p class="muted">直接选择已有技能。内置、固定版本和无正文的技能只读；保存携带读取时的版本，冲突不会静默覆盖。</p><div class="form-grid"><div><label for="skill-waker">机器人</label><select id="skill-waker">${options(state.wakers,skillWaker)}</select></div><div><label for="skill-id">技能</label><select id="skill-id">${skillRows.map(s=>`<option value="${esc(s.skillId)}">${esc(s.name||s.skillId)}${s.pinned||s.mutableByAgent!==true?'（只读）':''}</option>`).join('')}</select></div></div><div class="form-actions">${btn('loadSkill','读取 Skill',undefined,skillRows.length?'':'disabled')}</div>`)+`<section id="skill-editor" class="card" hidden></section>`;
+  if(!skillRows.some(s=>s.skillId===selectedSkill))selectedSkill=(skillRows.find(s=>s.mutableByAgent===true&&!s.pinned)||skillRows[0])?.skillId||'';
+  return `<div class="skill-workspace"><aside class="skill-browser" aria-label="技能资源"><label for="skill-waker">Waker</label><select id="skill-waker">${options(state.wakers,skillWaker)}</select><label class="sr-only" for="skill-search">查找技能</label><input id="skill-search" type="search" placeholder="查找技能…"><div class="section-caption"><span>技能</span><span>${skillRows.length} 项</span></div><div id="skill-items" class="skill-items"></div><select id="skill-id" hidden aria-label="当前技能">${skillRows.map(s=>`<option value="${esc(s.skillId)}"${s.skillId===selectedSkill?' selected':''}>${esc(s.name||s.skillId)}</option>`).join('')}</select>${btn('reloadSkill','重新读取',undefined,`class="reload-skill"${skillRows.length?'':' disabled'}`)}</aside><section id="skill-editor" class="skill-stage" aria-label="技能工作区">${empty(skillRows.length?'正在读取技能…':state.error?'暂时无法读取技能。':state.wakers.length?'当前 Waker 没有技能。':isAdmin()?'请先在机器人页面创建 Waker。':'尚未分配 Waker，请联系管理员。')}</section></div>`;
 };
-afterRender.skills=()=>{
-  E('skill-waker').addEventListener('change',async()=>{skillWaker=E('skill-waker').value;await route('skills')});
-  E('skill-id').addEventListener('change',()=>{loadedSkill=null;skillRequest++;E('skill-editor').hidden=true;E('skill-editor').replaceChildren()});
+afterRender.skills=async()=>{
+  beforeNavigate=skillCanLeave;unsavedChanges=skillDirty;skillList();
+  E('skill-search').addEventListener('input',skillList);
+  E('skill-waker').addEventListener('change',async()=>{
+    const next=E('skill-waker').value;
+    if(!await skillCanLeave()){E('skill-waker').value=skillWaker;return}
+    beforeNavigate=null;skillWaker=next;selectedSkill='';await route('skills');
+  });
+  if(selectedSkill)await actions.loadSkill();
 };
+actions.reloadSkill=async()=>{if(!skillDirty()||await confirmAction('重新读取将替换未保存的草稿。继续？'))await actions.loadSkill()};
 actions.loadSkill=async()=>{
   const wid=E('skill-waker').value,sid=E('skill-id').value,g=generation,request=++skillRequest;
+  loadedSkill=null;E('skill-editor').innerHTML=empty('正在读取技能…');
   const d=await api('skill/content?'+query({waker:wid,skill:sid}));
   let versions=[],versionError='';
   try{versions=await api('skill/versions?'+query({waker:wid,skill:sid}))}catch(error){versionError=error.message}
   if(g!==generation||view!=='skills'||request!==skillRequest)return;
-  managedVersions=versions;loadedSkill={wid,sid,version:d.skill.currentVersionId,editable:d.editable===true};
-  const box=E('skill-editor');box.hidden=false;
-  box.innerHTML=`<h2>${esc(d.skill.name||sid)}</h2>${!d.contentAvailable?'<div class="notice">该技能未提供可读取的正文，不能编辑；不是面板服务故障。</div>':!d.editable?'<div class="notice">该技能为只读或没有可用版本基线。</div>':''}${d.contentAvailable?`<label for="skill-content">技能正文</label><textarea class="skill-content" id="skill-content" maxlength="60000"${d.editable?'':' readonly'}>${esc(d.content)}</textarea>`:''}<div class="form-actions">${btn('saveSkill','按版本保存',undefined,d.editable?'':'disabled')}</div>${versionError?`<p class="muted">版本列表：${esc(versionError)}</p>`:''}${versions.length?table(['版本','时间','操作'],versions.map((x,i)=>`<tr><td class="mono">${esc(x.versionId)}</td><td>${esc(x.createdAt||x.updatedAt)}</td><td>${btn('diffSkill','差异',i)}${btn('rollbackSkill','回滚',i,d.editable?'':'disabled')}</td></tr>`)):empty('暂无版本历史')}<label for="rollback-reason">回滚原因</label><input id="rollback-reason" maxlength="500" value="面板管理员回滚"${d.editable?'':' disabled'}><pre id="skill-diff" class="code" hidden></pre>`;
-  bindActions();box.scrollIntoView({block:'nearest'});
+  managedVersions=versions;const row=skillRows.find(s=>s.skillId===sid);if(row)row.currentVersionId=d.skill.currentVersionId;loadedSkill={wid,sid,version:d.skill.currentVersionId,editable:d.editable===true,content:d.content};
+  const box=E('skill-editor'),wakerName=state.wakers.find(w=>w.id===wid)?.name||wid;
+  box.innerHTML=`<header class="skill-editor-header"><div><h2>${esc(d.skill.name||sid)}</h2><p class="skill-context">${esc(wakerName)} · <span class="mono">${esc(d.skill.currentVersionId||'无版本')}</span></p></div><div class="skill-save"><span id="skill-save-status"></span>${btn('saveSkill','保存修改',undefined,'id="skill-save" class="primary" disabled')}</div></header>
+    <div class="skill-tabs" role="group" aria-label="技能视图"><button id="skill-tab-content" type="button" aria-pressed="true" aria-controls="skill-pane-content">正文</button><button id="skill-tab-history" type="button" aria-pressed="false" aria-controls="skill-pane-history">版本与差异 <span class="muted">${versions.length}</span></button></div>
+    <section id="skill-pane-content" class="skill-pane">${!d.contentAvailable?'<div class="notice">该技能未提供可读取的正文。</div>':!d.editable?`<div class="notice">${d.readOnlyReason==='permission_denied'?'当前账号可查看正文与版本。':'该技能为只读，或没有可用的版本基线。'}</div>`:''}${d.contentAvailable?`<label class="sr-only" for="skill-content">技能正文</label><textarea class="skill-content" id="skill-content" maxlength="60000" spellcheck="false"${d.editable?'':' readonly'}>${esc(d.content)}</textarea>`:''}</section>
+    <section id="skill-pane-history" class="skill-pane" hidden><p class="skill-version-note">当前版本 <span class="mono">${esc(d.skill.currentVersionId||'未提供')}</span> · 选择历史版本查看差异。</p>${versionError?`<p class="error-text">${esc(versionError)}</p>`:''}${versions.length?table(['版本','时间','操作'],versions.map((x,i)=>`<tr><td class="mono">${esc(x.versionId)}${x.versionId===d.skill.currentVersionId?' <span class="badge">当前</span>':''}</td><td>${esc(x.createdAt||x.updatedAt)}</td><td class="actions">${btn('diffSkill','查看差异',i)}${btn('rollbackSkill','恢复此版本',i,`class="danger"${d.editable?'':' disabled'}`)}</td></tr>`)):empty('暂无版本历史')}<div id="skill-rollback" class="skill-rollback" hidden><h3 id="skill-rollback-title"></h3><label for="rollback-reason">恢复原因</label><input id="rollback-reason" maxlength="500" placeholder="说明这次恢复的原因"><div class="form-actions">${btn('confirmRollback','确认恢复',undefined,'class="danger"')}${btn('cancelRollback','取消')}</div></div><pre id="skill-diff" class="code" hidden tabindex="0"></pre></section>
+    <footer class="skill-editor-foot"><span>${d.editable?'Markdown · ⌘ S 保存':'Markdown · 只读'}</span><span id="skill-content-meta"></span></footer>`;
+  E('skill-content')?.addEventListener('input',skillEditorState);
+  E('skill-content')?.addEventListener('keydown',event=>{if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='s'){event.preventDefault();if(!E('skill-save').disabled)E('skill-save').click()}});
+  ['content','history'].forEach(id=>E('skill-tab-'+id).addEventListener('click',()=>skillShowPane(id)));
+  skillShowPane(skillPane);skillEditorState();skillList();bindActions();
 };
 actions.saveSkill=async()=>{
   if(!loadedSkill?.editable)return;
-  const current={...loadedSkill};const result=await mutate('skill/update',{wakerId:current.wid,skillId:current.sid,content:E('skill-content').value,baseVersionId:current.version},'保存 Skill 正文？并发版本变化将返回冲突。');
-  if(result&&view==='skills')await actions.loadSkill();
+  const current={...loadedSkill},editor=E('skill-content');let result;editor.readOnly=true;
+  try{result=await mutate('skill/update',{wakerId:current.wid,skillId:current.sid,content:E('skill-content').value,baseVersionId:current.version},'保存当前技能正文？')}
+  catch(error){if(error.code==='version_conflict'){const latest=await api('skill/content?'+query({waker:current.wid,skill:current.sid}));if(view==='skills'&&loadedSkill?.wid===current.wid&&loadedSkill?.sid===current.sid)conflictDetails(E('skill-editor'),current.content,E('skill-content').value,latest.content)}throw error}finally{if(editor.isConnected)editor.readOnly=!current.editable}
+  if(result&&view==='skills'&&loadedSkill?.wid===current.wid&&loadedSkill?.sid===current.sid)await actions.loadSkill();
 };
 actions.diffSkill=async i=>{
   if(!loadedSkill)return;const current={...loadedSkill},g=generation;
   const d=await api('skill/diff?'+query({waker:current.wid,skill:current.sid,version:managedVersions[i].versionId}));
-  if(g!==generation||loadedSkill?.sid!==current.sid)return;E('skill-diff').hidden=false;E('skill-diff').textContent=JSON.stringify(d,null,2);
+  if(g!==generation||loadedSkill?.wid!==current.wid||loadedSkill?.sid!==current.sid)return;
+  E('skill-diff').hidden=false;E('skill-diff').textContent=JSON.stringify(d,null,2);
 };
-actions.rollbackSkill=async i=>{
-  if(!loadedSkill?.editable)return;const reason=E('rollback-reason').value.trim();if(!reason)throw new Error('请填写回滚原因');
-  const current={...loadedSkill};if(await mutate('skill/rollback',{wakerId:current.wid,skillId:current.sid,versionId:managedVersions[i].versionId,reason},'回滚到所选 Skill 版本？'))await actions.loadSkill();
+let rollbackVersion='';
+actions.rollbackSkill=i=>{
+  if(!loadedSkill?.editable)return;rollbackVersion=managedVersions[i].versionId;
+  E('skill-rollback-title').textContent='恢复到 '+rollbackVersion;E('skill-rollback').hidden=false;E('rollback-reason').value='';E('rollback-reason').focus();
+};
+actions.cancelRollback=()=>{rollbackVersion='';E('skill-rollback').hidden=true};
+actions.confirmRollback=async()=>{
+  if(!loadedSkill?.editable||!rollbackVersion)return;
+  const reason=E('rollback-reason').value.trim();if(!reason)throw new Error('请填写恢复原因');
+  const current={...loadedSkill};
+  if(await mutate('skill/rollback',{wakerId:current.wid,skillId:current.sid,versionId:rollbackVersion,baseVersionId:current.version,reason},`恢复到版本 ${rollbackVersion}？${skillDirty()?'当前未保存的草稿将被替换。':''}`))await actions.loadSkill();
 };

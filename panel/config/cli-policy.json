@@ -1,0 +1,318 @@
+{
+  "read": [
+    "account.activity",
+    "account.plan",
+    "account.profile",
+    "account.usage",
+    "atwaker.im.files.list",
+    "atwaker.im.messages.around",
+    "atwaker.im.messages.get",
+    "atwaker.im.messages.range",
+    "atwaker.im.messages.search",
+    "atwaker.memory.get",
+    "atwaker.memory.recall",
+    "atwaker.memory.types",
+    "atwaker.task.result.status",
+    "atwaker.tasks.get",
+    "atwaker.tasks.search",
+    "atwaker.tasks.summary",
+    "atwaker.topics.get",
+    "atwaker.topics.list",
+    "atwaker.topics.search",
+    "auth.github.cli-status",
+    "auth.github.status",
+    "automation.calendar",
+    "automation.detail",
+    "automation.inspect.run",
+    "automation.list",
+    "automation.runs",
+    "automation.sources",
+    "automation.stats",
+    "backup.list",
+    "board.filter-options",
+    "board.summary",
+    "board.task",
+    "board.tasks",
+    "channel.dingtalk-user.account.resolve",
+    "channel.dingtalk-user.account.search",
+    "channel.dingtalk-user.conversation.search",
+    "channel.dingtalk-user.dws.bootstrap-status",
+    "channel.dingtalk-user.dws.status",
+    "channel.dingtalk-user.self-direct-receipts.list",
+    "channel.dingtalk-user.shared-identity.get",
+    "channel.dingtalk.group.search",
+    "channel.dingtalk.user.resolve",
+    "channel.dingtalk.user.search",
+    "channel.feishu.account.auth.status",
+    "channel.feishu.account.resolve",
+    "channel.feishu.account.search",
+    "channel.feishu.conversation.search",
+    "channel.feishu.status",
+    "channel.get",
+    "channel.list",
+    "channel.pairing.conflict.get",
+    "channel.pairing.get",
+    "channel.pairing.list",
+    "channel.pairing.pending",
+    "channel.pairing.target.list",
+    "channel.settings",
+    "channel.wecom-bot.account.resolve",
+    "channel.wecom-bot.account.search",
+    "channel.wecom-bot.conversation.search",
+    "channel.wecom-bot.status",
+    "channel.whatsapp.status",
+    "config.get",
+    "config.list",
+    "connector.computer-use.status",
+    "connector.market",
+    "diagnostics.runtime-env.list",
+    "extension.list",
+    "goal.get",
+    "group.list",
+    "group.show",
+    "group.skill.list",
+    "group.sop.list",
+    "human-action.list",
+    "knowledge.featured",
+    "knowledge.notebook.get",
+    "knowledge.notebook.list",
+    "knowledge.notebook.shared",
+    "knowledge.source.get",
+    "knowledge.source.list",
+    "local.employee.list",
+    "log",
+    "mcp.get",
+    "mcp.list",
+    "mcp.operation",
+    "memory.diff",
+    "memory.lifecycle.inspect",
+    "memory.show",
+    "memory.versions",
+    "messages.list",
+    "models.list",
+    "models.preference.get",
+    "permission.approval.list",
+    "permission.approval.watch",
+    "permission.builtin.tool-catalog",
+    "permission.builtin.tool-guard-rules",
+    "permission.get",
+    "plugin.events",
+    "plugin.info",
+    "plugin.list",
+    "plugin.scheduled-task.list",
+    "project.get",
+    "project.list",
+    "proxy.status",
+    "readiness",
+    "remote.employee.config",
+    "remote.employee.config-summary",
+    "remote.employee.get",
+    "remote.employee.list",
+    "runs.list",
+    "session.artifacts",
+    "session.detail",
+    "session.events",
+    "session.list",
+    "session.stream",
+    "session.wait",
+    "settings.get",
+    "settings.global.get",
+    "settings.language.get",
+    "skill.diff",
+    "skill.list",
+    "skill.search",
+    "skill.versions",
+    "sop.list",
+    "sop.validate",
+    "status",
+    "teams.conversation.activities",
+    "teams.conversation.messages",
+    "teams.conversation.missions",
+    "teams.conversation.summary",
+    "teams.diagnose",
+    "teams.group.get",
+    "teams.mission-workroom",
+    "todo.list",
+    "trace.list",
+    "trace.show",
+    "version",
+    "waker.context",
+    "waker.delete-impact",
+    "waker.get",
+    "waker.list",
+    "waker.template.list",
+    "waker.template.show",
+    "waker.template.versions",
+    "whoami",
+    "workflow.confirmations",
+    "workflow.customize.get",
+    "workflow.customize.list",
+    "workflow.get",
+    "workflow.list",
+    "workflow.run-get",
+    "workflow.runs",
+    "workflow.versions"
+  ],
+  "scoped": {
+    "waker.get": [
+      "--waker-id",
+      "--format",
+      "--json"
+    ],
+    "waker.context": [
+      "--waker-id",
+      "--format",
+      "--json"
+    ],
+    "project.list": [
+      "--waker-id",
+      "--format",
+      "--json"
+    ],
+    "project.get": [
+      "--waker-id",
+      "--project-id",
+      "--format",
+      "--json"
+    ],
+    "mcp.list": [
+      "--waker-id"
+    ],
+    "mcp.get": [
+      "--waker-id",
+      "--mcp-id"
+    ],
+    "skill.list": [
+      "--waker-id"
+    ],
+    "skill.versions": [
+      "--waker-id",
+      "--skill-id"
+    ],
+    "skill.diff": [
+      "--waker-id",
+      "--skill-id",
+      "--from",
+      "--to"
+    ],
+    "skill.toggle": [
+      "--waker-id",
+      "--skill-id",
+      "--enabled"
+    ],
+    "skill.self-evolution": [
+      "--waker-id",
+      "--skill-id",
+      "--enabled"
+    ],
+    "skill.manage": [
+      "--waker-id",
+      "--action",
+      "--skill-id",
+      "--skill-name",
+      "--path",
+      "--content",
+      "--old-text",
+      "--new-text",
+      "--base-version-id",
+      "--summary",
+      "--dry-run",
+      "--format"
+    ],
+    "permission.get": [
+      "--waker-id",
+      "--format",
+      "--json"
+    ],
+    "waker.update.name": [
+      "--waker-id",
+      "--format",
+      "--json"
+    ],
+    "waker.update.description": [
+      "--waker-id",
+      "--format",
+      "--json"
+    ],
+    "waker.update.identity": [
+      "--waker-id",
+      "--append",
+      "--format",
+      "--json"
+    ],
+    "waker.update.persona": [
+      "--waker-id",
+      "--append",
+      "--format",
+      "--json"
+    ],
+    "waker.update.bible": [
+      "--waker-id",
+      "--append",
+      "--format",
+      "--json"
+    ],
+    "waker.update.coreCapabilities": [
+      "--waker-id",
+      "--append",
+      "--format",
+      "--json"
+    ],
+    "waker.update.workStyles": [
+      "--waker-id",
+      "--append",
+      "--format",
+      "--json"
+    ],
+    "waker.update.deliveryCommitments": [
+      "--waker-id",
+      "--append",
+      "--format",
+      "--json"
+    ],
+    "memory.show": [
+      "--waker-id",
+      "--view"
+    ],
+    "memory.versions": [
+      "--waker-id"
+    ],
+    "memory.lifecycle.inspect": [
+      "--waker-id"
+    ],
+    "memory.diff": [
+      "--waker-id",
+      "--from",
+      "--to"
+    ]
+  },
+  "panelOnly": [
+    "waker.delete",
+    "skill.rollback"
+  ],
+  "pages": {
+    "waker": "wakers",
+    "skill": "skills",
+    "models": "models",
+    "memory": "memory",
+    "plugin": "plugins",
+    "automation": "operations",
+    "session": "sessions",
+    "channel": "channels",
+    "config": "controls",
+    "proxy": "net",
+    "backup": "security"
+  },
+  "spend": [
+    "project.onboard",
+    "session.create",
+    "session.send",
+    "automation.run-now",
+    "automation.test-pull",
+    "automation.invoke",
+    "workflow.run",
+    "workflow.run-retry",
+    "workflow.customize.start",
+    "memory.dream"
+  ]
+}

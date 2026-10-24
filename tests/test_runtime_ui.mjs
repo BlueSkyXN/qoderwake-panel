@@ -5,16 +5,16 @@ import test from 'node:test';
 
 const management=readFileSync(new URL('../panel/static/management.js',import.meta.url),'utf8');
 const panel=readFileSync(new URL('../panel/static/panel.js',import.meta.url),'utf8');
-const definitions=management.split('\n').filter(line=>line.startsWith('function ')).join('\n');
-function runtimeContext(extra={}){return vm.createContext({card:(_,body)=>body,esc:value=>String(value??''),btn:(action,label,index,extra='')=>`<button data-action="${action}" ${extra}>${label}</button>`,...extra})}
+const definitions=management.slice(0,management.indexOf('const oldPlugins'));
+function runtimeContext(extra={}){return vm.createContext({stateLoadedAt:0,nav:[],table:(_,rows)=>rows.join(''),card:(_,body)=>body,esc:value=>String(value??''),btn:(action,label,index,extra='')=>`<button data-action="${action}" ${extra}>${label}</button>`,...extra})}
 const base={desired:{hotDeploy:false,embeddingDisabled:true},effectiveOnPanelRestart:{hotDeploy:false,embeddingDisabled:true},observed:[],pendingRestart:null,restartAllowed:false,note:'fixture'};
 
 test('unknown runtime is not a restart requirement and disables restart',()=>{
   const context=runtimeContext();vm.runInContext(definitions,context);
   const html=context.runtimeCard(base);
-  assert.match(html,/未知：不能判断是否需要重启/);
+  assert.match(html,/data-runtime-status="unknown"/);
   assert.match(html,/data-action="applyRuntime" disabled/);
-  assert.doesNotMatch(html,/已核实：与保存策略不同/);
+  assert.doesNotMatch(html,/data-runtime-status="changed"/);
   assert.match(html,/会话投影上行/);
   assert.match(html,/继承启动环境/);
 });
@@ -22,7 +22,7 @@ test('verified applied and changed runtime are distinct',()=>{
   const context=runtimeContext();vm.runInContext(definitions,context);
   for(const pending of [false,true]){
     const html=context.runtimeCard({...base,pendingRestart:pending,restartAllowed:true,observed:[{hotDeploy:false,embeddingDisabled:true}]});
-    assert.match(html,pending?/已核实：与保存策略不同/:/已核实：与保存策略一致/);
+    assert.match(html,pending?/data-runtime-status="changed"/:/data-runtime-status="applied"/);
     assert.doesNotMatch(html,/data-action="applyRuntime" disabled/);
   }
 });
@@ -59,8 +59,8 @@ test('hash navigation follows browser history without duplicate renders',async()
   context.identity=null;context.location.hash='#models';await context.onHashChange();assert.equal(calls.length,1);
 });
 test('viewer deep link falls back to overview instead of leaving a blank page',async()=>{
-  const context=vm.createContext({identity:{level:'viewer'},nav:[['overview','总览','简介'],['controls','增强管理','简介']],isAdmin:()=>false,toast:()=>{},clearTimeout:()=>{},poll:null,view:'controls',generation:0,location:{hash:'#controls'},E:()=>({textContent:''}),document:{querySelectorAll:()=>[]},put:()=>{},empty:()=>'',card:()=>'',esc:value=>value,renderers:{overview:async()=> 'overview'},afterRender:{}});
-  vm.runInContext(panel.split('\n').find(line=>line.startsWith('async function route(')),context);
+  const context=vm.createContext({identity:{level:'viewer'},nav:[['overview','总览','简介'],['controls','增强管理','简介']],isAdmin:()=>false,toast:()=>{},clearTimeout:()=>{},poll:null,view:'controls',generation:0,location:{hash:'#controls'},E:()=>({textContent:'',value:'',dataset:{}}),document:{querySelectorAll:()=>[]},window:{scrollTo(){}},state:{daemon:'running'},beforeNavigate:null,unsavedChanges:()=>false,navigationGroup:()=>null,navigationLabel:item=>item[1],can:()=>false,renderNavigation(){},put:()=>{},empty:()=>'',card:()=>'',esc:value=>value,renderers:{overview:async()=> 'overview'},afterRender:{}});
+  vm.runInContext(panel.split('\n').find(line=>line.startsWith('const canView='))+'\n'+panel.slice(panel.indexOf('async function route(next)'),panel.indexOf('\nfunction gatewayStatus')),context);
   await context.route('controls');assert.equal(context.view,'overview');assert.equal(context.location.hash,'overview');
 });
 test('usage partial scan is explicitly labelled',()=>{

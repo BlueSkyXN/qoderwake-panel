@@ -16,6 +16,8 @@ panel-restart.lock
 *.key
 backups/
 patches/
+!/internal/patches/
+!/internal/patches/*.go
 runtime-policy.json
 daemon-start-mode.json
 provider-settings.previous.json
@@ -29,3 +31,16 @@ usage.db
 *.log
 __pycache__/
 .DS_Store
+
+# React 构建资源与本地 Go 产物
+/internal/webui/public/*
+!/internal/webui/public/.gitkeep
+/build/
+/panel-go
+
+# Development-only files
+/local/
+/web/node_modules/
+/web/.vite/
+/dist/
+*.test
