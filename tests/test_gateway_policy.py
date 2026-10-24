@@ -12,6 +12,11 @@ gw = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gw)
 
 
+class AuditTestServer(gw.ThreadingHTTPServer):
+    # server_close 会等待请求线程写完审计；shutdown 只停止接收新连接。
+    daemon_threads = False
+
+
 class GatewayTests(unittest.TestCase):
     def test_strict_exact_routes_body_queries_and_sink_boundary(self):
         cfg = gw.validate_cfg({'mode':'strict', 'rules':[{'method':'GET','path':'/catalog','query':['page'],'headers':[],'max_body':0}]})
@@ -26,7 +31,7 @@ class GatewayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             class Handler(gw.H):
                 config = gw.validate_cfg({'mode':'strict'})
-            server = gw.ThreadingHTTPServer(('127.0.0.1',0),Handler)
+            server = AuditTestServer(('127.0.0.1',0),Handler)
             thread = threading.Thread(target=server.serve_forever,daemon=True)
             thread.start()
             try:
@@ -36,7 +41,7 @@ class GatewayTests(unittest.TestCase):
                     response=con.getresponse()
                     self.assertEqual(response.status,403)
                     response.read();con.close()
-                    server.shutdown();thread.join()
+                    server.shutdown();server.server_close();thread.join()
                     opener.assert_not_called()
                     log=(Path(tmp).resolve()/'audit.jsonl').read_text()
                     self.assertNotIn('secret',log)
@@ -54,7 +59,7 @@ class GatewayTests(unittest.TestCase):
         class Handler(gw.H):
             config=gw.validate_cfg({'mode':'strict','audit_paths':['/catalog'],'rules':[{'method':'GET','path':'/catalog','query':[],'headers':['accept'],'max_body':0}]})
         with tempfile.TemporaryDirectory() as tmp:
-            server=gw.ThreadingHTTPServer(('127.0.0.1',0),Handler)
+            server=AuditTestServer(('127.0.0.1',0),Handler)
             thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
             try:
                 with patch.object(gw,'LOG',Path(tmp).resolve()/'log'), patch.object(gw.urllib.request,'build_opener') as factory:
@@ -71,8 +76,8 @@ class GatewayTests(unittest.TestCase):
                     self.assertNotIn('Cookie',request.headers)
                     self.assertNotIn('Proxy-authorization',request.headers)
                     self.assertEqual(request.headers['Accept'],'application/json')
+                    server.shutdown();server.server_close();thread.join()
                     self.assertEqual(json.loads((Path(tmp).resolve()/'log').read_text())['path'],'/catalog')
-                    server.shutdown();thread.join()
             finally:
                 server.shutdown();server.server_close();thread.join()
 
@@ -81,7 +86,7 @@ class GatewayTests(unittest.TestCase):
         class Handler(gw.H):
             config=gw.validate_cfg({'mode':'enforce','token_allow_prefixes':[]})
         with tempfile.TemporaryDirectory() as tmp:
-            server=gw.ThreadingHTTPServer(('127.0.0.1',0),Handler)
+            server=AuditTestServer(('127.0.0.1',0),Handler)
             thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
             try:
                 with patch.object(gw,'LOG',Path(tmp).resolve()/'audit'), patch.object(gw.urllib.request,'build_opener') as opener:
@@ -94,7 +99,7 @@ class GatewayTests(unittest.TestCase):
                                 if not chunk:break
                                 data+=chunk
                             self.assertIn(b'400 Bad Request',data)
-                    server.shutdown();thread.join()
+                    server.shutdown();server.server_close();thread.join()
                     opener.assert_not_called()
                     rows=[json.loads(x) for x in (Path(tmp).resolve()/'audit').read_text().splitlines()]
                     self.assertEqual(len(rows),3)
